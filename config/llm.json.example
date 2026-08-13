@@ -1,0 +1,21 @@
+{
+  "_설명": "LLM 연결 설정. 토큰은 코드가 아니라 이 파일(headers) 또는 환경변수(api_key_env)에 둔다.",
+  "base_url": "http://127.0.0.1:8820",
+  "model": "sonnet",
+  "url": "",
+  "headers": {
+    "Authorization": "Bearer <발급-토큰>"
+  },
+  "api_key_env": "LLM_DATA_API_KEY",
+  "timeout": 300,
+  "response_schema": false,
+  "extra_payload": { "temperature": 0 },
+  "_비고": "아래 키들은 이 환경에서는 미사용 — 다른 환경 연동 시 사용",
+  "OPENAI_API_KEY": "dummy",
+  "credential_key": "credential:TICKET-",
+  "send_system_name": "platground",
+  "env_model": "gpt-oss-120b",
+  "api_base_url": "http://apigw....",
+  "user_id": "",
+  "user_pw": ""
+}

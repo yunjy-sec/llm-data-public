@@ -1,0 +1,16 @@
+services:
+  llm-data:
+    build: .
+    ports:
+      - "8821:8821"
+    environment:
+      LLM_DATA_PERSIST: /data      # persistent volume 필수 — 재기동에도 유지
+      LLM_DATA_RUNTIME: /runtime   # 유실 허용 — 마운트하지 않는다
+    volumes:
+      - llm_data_persist:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # llm-api(8820)가 호스트에서 돌 때 접근용
+    restart: unless-stopped
+
+volumes:
+  llm_data_persist:

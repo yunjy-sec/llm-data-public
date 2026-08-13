@@ -1,0 +1,197 @@
+{
+  "schema_name": "EsdEvalResult",
+  "description": "ESD(HBM/CDM)·LUP 스펙 판정 + 한계평가 결과 표준 레코드. 시험은 낮은 스트레스부터 순차 인가하며 스펙 도달 후에도 파괴 시까지 진행(한계평가)한다. 원자(atomic) 단위는 (device, eval, stress_type, polarity) 조합당 1 레코드 — 한 pkg의 HBM은 pos/neg 2행, CDM도 2행. 스키마는 columns(표의 묶음) → fields(열) 2단으로 정의되며 출력 레코드는 group 중첩 없이 field의 id를 key로 하는 평면 객체다. 모든 값은 문자열(string)이며 스트레스 값은 stress_unit 단위의 절대값 숫자 문자열이다.",
+  "version": "4",
+  "columns": [
+    {
+      "group": "req info",
+      "fields": [
+        {
+          "id": "sample_id",
+          "label": "시료 번호",
+          "type": "string",
+          "description": "시료 식별자 — 원본의 시료 번호/샘플 구분값 (숫자 문자열 가능)",
+          "description_detail": "값이 없으면 null. pkg 타입(W/B, FC-BGA 등)이 시료 구분에 함께 적혀 있으면 원문 표기를 유지한다.",
+          "mapping_logic_ip_eval_esd": "'시료#', '시료 번호', 'Sample' 열에서 그대로 가져온다.",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "device",
+          "label": "평가 대상",
+          "type": "string",
+          "description": "평가 대상 die/제품/리비전",
+          "description_detail": "제품명과 리비전이 한 셀에 있으면 원문 그대로 유지한다.",
+          "mapping_logic_ip_eval_esd": "'품명 (Device)', 'Device', '품명' 열에서 가져온다.",
+          "mapping_logic_chatbot": ""
+        }
+      ]
+    },
+    {
+      "group": "eval cond",
+      "fields": [
+        {
+          "id": "eval",
+          "label": "평가 종류",
+          "type": "string",
+          "enum": ["정식", "간이"],
+          "description": "평가 종류 — 정식(정규 qual) 또는 간이 평가. 원본에서 판별 불가면 null",
+          "description_detail": "허용 코드: 정식, 간이.",
+          "mapping_logic_ip_eval_esd": "'평가 구분', '정식/간이' 표기에서 판별. 표기가 없으면 null.",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "eval_type",
+          "label": "판정 방법",
+          "type": "string",
+          "enum": ["ATE", "IV"],
+          "description": "판정 방법 — ATE(테스터 판정) 또는 IV(I-V 특성 판정). 원본에서 판별 불가면 null",
+          "description_detail": "허용 코드: ATE, IV. 누설전류·I-V 특성으로 판정했다는 표기가 있으면 IV.",
+          "mapping_logic_ip_eval_esd": "'Tester 장비', '판정 방법', '누설전류(uA) @Spec' 열의 존재로 추정한다.",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "stress_type",
+          "label": "시험 구분",
+          "type": "string",
+          "enum": ["HBM", "CDM", "LUP"],
+          "description": "스트레스 시험 구분: HBM/CDM은 ESD 전압 스트레스, LUP는 latch-up 전류 주입 시험",
+          "description_detail": "허용 코드: HBM, CDM, LUP.",
+          "mapping_logic_ip_eval_esd": "'구분' 열의 HBM/CDM/LUP 표기를 그대로 사용한다.",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "stress_unit",
+          "label": "스트레스 단위",
+          "type": "string",
+          "enum": ["V", "mA"],
+          "description": "스트레스 값들의 단위 — HBM/CDM은 V, LUP는 mA. pass_stresses·fail_stresses·한계값·스펙 판정 기준값에 적용",
+          "description_detail": "허용 코드: V, mA. stress_type이 HBM·CDM이면 V, LUP면 mA로 확정된다.",
+          "mapping_logic_ip_eval_esd": "stress_type에서 도출한다(원본에 단위 열이 따로 없음).",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "polarity",
+          "label": "극성",
+          "type": "string",
+          "enum": ["pos", "neg"],
+          "description": "인가 극성. 원본의 '(+)', '+' 표기는 pos로, '(-)', '-' 표기는 neg로 정규화 (LUP는 양/음 전류 주입)",
+          "description_detail": "허용 코드: pos, neg. 한 행에 (+)/(-)가 함께 있으면 극성별로 레코드를 분리한다.",
+          "mapping_logic_ip_eval_esd": "'극성' 열의 (+)/(-) 표기를 pos/neg로 변환한다.",
+          "mapping_logic_chatbot": ""
+        }
+      ]
+    },
+    {
+      "group": "spec",
+      "fields": [
+        {
+          "id": "spec_voltage",
+          "label": "스펙 전압(V)",
+          "type": "string",
+          "description": "요구 스펙 전압, V 절대값의 숫자 문자열 (±1kV → \"1000\", ±250V → \"250\"). LUP는 과전압 조건 전압. 전압 스펙이 없으면 null",
+          "description_detail": "kV 표기는 V로 환산한다. ± 부호는 제거하고 절대값만 남긴다.",
+          "mapping_logic_ip_eval_esd": "'ESD Spec' 열의 전압 표기를 V로 환산한다.",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "spec_current",
+          "label": "스펙 전류",
+          "type": "string",
+          "description": "전류 스펙의 숫자 문자열 — CDM 등가 스펙은 A 단위(예: '등가 ±5A' → \"5\"), LUP 주입 전류 스펙은 mA 단위(예: ±100mA → \"100\"). 원본에 없으면 null",
+          "description_detail": "CDM 등가 전류와 LUP 주입 전류는 단위가 다르므로(A vs mA) stress_type을 함께 확인한다.",
+          "mapping_logic_ip_eval_esd": "'ESD Spec' 열의 등가 전류 표기(예: 등가 ±5A)에서 가져온다.",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "spec_pass_fail",
+          "label": "스펙 판정",
+          "type": "string",
+          "enum": ["PASS", "FAIL"],
+          "description": "스펙 만족 여부",
+          "description_detail": "허용 코드: PASS, FAIL. 스펙 스트레스까지 파괴 없이 통과했으면 PASS, 스펙 미만에서 파괴됐으면 FAIL.",
+          "mapping_logic_ip_eval_esd": "'Spec 판정' 열을 사용하고, 없으면 스펙값과 파괴 스트레스를 비교해 도출한다.",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "max_pass_or_min_fail",
+          "label": "스펙 판정 기준값",
+          "type": "string",
+          "description": "스펙 판정 기준값(stress_unit 단위 숫자 문자열): PASS면 스펙 만족이 확인된 최소 인가 스트레스, FAIL이면 스펙을 만족하지 못한 것이 확인된 최대 인가 스트레스",
+          "description_detail": "PASS/FAIL에 따라 의미가 달라지는 파생값이다. 원본에 직접 열이 없어도 인가 이력에서 계산한다.",
+          "mapping_logic_ip_eval_esd": "'인가 스트레스 Step'과 'ESD Spec'을 비교해 계산한다.",
+          "mapping_logic_chatbot": ""
+        }
+      ]
+    },
+    {
+      "group": "limit",
+      "fields": [
+        {
+          "id": "limit_final_pass",
+          "label": "한계 최종 생존",
+          "type": "string",
+          "description": "한계평가: 파괴 없이 최종 생존한 최대 인가 스트레스(stress_unit 단위). 파괴가 있으면 그 직전 통과 스텝, '미파괴'면 최대 인가값",
+          "description_detail": "pass_stresses의 최대값과 일치하는 것이 일반적이다.",
+          "mapping_logic_ip_eval_esd": "'인가 스트레스 Step'과 '최종 Fail'에서 계산한다.",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "limit_final_fail",
+          "label": "한계 최종 파괴",
+          "type": "string",
+          "description": "한계평가: 파괴가 발생한 최소 인가 스트레스(stress_unit 단위) = 원본의 파괴/최종 Fail 값 그대로. '미파괴'로 명시된 경우에만 null",
+          "description_detail": "'미파괴 (장비한계 1kV)'처럼 파괴가 없었다는 표기면 null이며 그 사실을 warnings에 남긴다.",
+          "mapping_logic_ip_eval_esd": "'최종 Fail' 열을 stress_unit 단위로 환산해 사용한다.",
+          "mapping_logic_chatbot": ""
+        }
+      ]
+    },
+    {
+      "group": "stress log",
+      "fields": [
+        {
+          "id": "pass_stresses",
+          "label": "통과 스트레스",
+          "type": "string",
+          "description": "통과(생존)한 인가 스트레스를 인가 순서대로 '→'로 이어붙인 문자열, stress_unit 단위 절대값 (예: \"500→1000→1500\")",
+          "description_detail": "배열이 아니라 '→'로 이어붙인 하나의 문자열이다. 단위 환산 후 절대값만 적는다.",
+          "mapping_logic_ip_eval_esd": "'인가 스트레스 Step' 열에서 파괴 스텝을 제외한 값들을 순서대로 이어붙인다.",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "fail_stresses",
+          "label": "파괴 스트레스",
+          "type": "string",
+          "description": "파괴(실패)가 발생한 인가 스트레스를 순서대로 '→'로 이어붙인 문자열, stress_unit 단위 절대값. 보통 1개지만 윈도우 이펙트가 있으면 복수. 미파괴면 null",
+          "description_detail": "윈도우 이펙트가 있으면 파괴 스트레스가 여러 개가 되며 그때도 '→'로 잇는다.",
+          "mapping_logic_ip_eval_esd": "'최종 Fail'과 '인가 스트레스 Step'의 실패 표기에서 가져온다.",
+          "mapping_logic_chatbot": ""
+        },
+        {
+          "id": "window_effect",
+          "label": "윈도우 이펙트",
+          "type": "string",
+          "enum": ["true", "false"],
+          "description": "윈도우 이펙트 여부: 실패 후 더 높은 스트레스에서 다시 통과하는 비단조(pass/fail 교차) 구간이 있으면 \"true\", 없으면 \"false\". 판단 불가면 null",
+          "description_detail": "허용 코드: \"true\", \"false\" (불리언이 아니라 문자열). pass/fail 시퀀스의 단조성에서 도출한다.",
+          "mapping_logic_ip_eval_esd": "'인가 스트레스 Step'의 pass/fail 순서를 분석해 도출한다.",
+          "mapping_logic_chatbot": ""
+        }
+      ]
+    },
+    {
+      "group": "etc",
+      "fields": [
+        {
+          "id": "condition",
+          "label": "시험 조건",
+          "type": "string",
+          "description": "부가 시험 조건 (예: LUP 온도 85°C, I-test/overvoltage 구분 등). 없으면 null",
+          "description_detail": "온도·시험 모드 등 판정에 영향을 주는 부가 조건을 원문 표기로 남긴다.",
+          "mapping_logic_ip_eval_esd": "'비고', '시험 조건', 온도 표기 열에서 가져온다.",
+          "mapping_logic_chatbot": ""
+        }
+      ]
+    }
+  ]
+}

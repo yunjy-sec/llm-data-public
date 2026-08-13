@@ -1,0 +1,5 @@
+품명 (Device)	LOT NO.	시료#	PKG Type	구분	극성	ESD Spec	인가 스트레스 Step	최종 Fail	Spec 판정	누설전류(uA) @Spec	평가일	Tester 장비	평가자	비고
+X3-SoC ES2	L25C0901	1	W/B	HBM	(+)	±1kV	0.5→1.0→1.5→2.0 kV	2.0 kV	PASS	0.08	'26.08.10	HANWA HED-W5000M	김철수
+X3-SoC ES2		1	W/B	HBM	(-)	±1kV	0.5→1.0→1.5 kV	1.5 kV	PASS	0.11		HANWA HED-W5000M	김철수	LOT 기재 누락
+X3-SoC ES2	L25C0901	2	FC-BGA	CDM	+	±250V	125/250/500 V		PASS	0.19	'26.08.11	Orion3 CDM		파괴 전압 기록 누락
+X3-SoC ES2	L25C0901		FC-BGA	CDM	-		125→250 V	250V		0.22	'26.08.11	Orion3 CDM	이영희	Spec은 별도 시트 참조

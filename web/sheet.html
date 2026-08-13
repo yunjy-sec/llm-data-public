@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>records sheet</title>
+<link rel="stylesheet" href="vendor/luckysheet/plugins/css/pluginsCss.css">
+<link rel="stylesheet" href="vendor/luckysheet/plugins/plugins.css">
+<link rel="stylesheet" href="vendor/luckysheet/css/luckysheet.css">
+<link rel="stylesheet" href="vendor/luckysheet/assets/iconfont/iconfont.css">
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #fff;
+               font: 13px "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+  #sheet-toolbar { display: none; position: absolute; top: 0; left: 0; right: 0; height: 36px;
+                   align-items: center; gap: 10px; padding: 0 10px; box-sizing: border-box;
+                   background: #f6f7f9; border-bottom: 1px solid #d9dee5; z-index: 10; }
+  #sheet-toolbar.on { display: flex; }
+  #sheet-file { font-family: Consolas, monospace; font-size: 12.5px; color: #344054;
+                flex: 1; max-width: 460px; border: 1px solid #d9dee5; border-radius: 6px;
+                padding: 3px 6px; background: #fff; }
+  .spacer { flex: 1; }
+  #sheet-toolbar button { font: inherit; font-size: 12.5px; border: 1px solid #d9dee5; background: #fff;
+                          border-radius: 6px; padding: 3px 14px; cursor: pointer; white-space: nowrap; }
+  #sheet-toolbar button:hover { border-color: #175cd3; color: #175cd3; }
+  #sheet-toolbar button.primary { background: #175cd3; border-color: #175cd3; color: #fff; }
+  #luckysheet { position: absolute; inset: 0; }
+  body.with-toolbar #luckysheet { top: 36px; }
+</style>
+</head>
+<body>
+<div id="sheet-toolbar">
+  <select id="sheet-file" title="읽어온 데이터 파일 — 선택하면 그 파일을 로드"></select>
+  <span class="spacer"></span>
+  <button id="sheet-save" class="primary" title="현재 파일에 덮어쓰기">저장</button>
+  <button id="sheet-saveas" title="dataset_yyyymmdd_hhmmss_{id}.json 새 이름으로 저장">다른 이름으로 저장</button>
+</div>
+<div id="luckysheet"></div>
+<script src="vendor/luckysheet/plugins/js/plugin.js"></script>
+<script src="vendor/luckysheet/luckysheet.umd.js"></script>
+<script>
+(function () {
+  "use strict";
+  /* 부모(index.html)가 postMessage로 넘긴 records를 Luckysheet로 렌더링한다.
+     iframe 격리 이유: luckysheet는 destroy()가 document 핸들러를 다 정리하지
+     못하는 싱글턴이라, 본문에 직접 올리면 잡 전환마다 리스너가 누적된다.
+     여기서는 잡이 바뀌면 부모가 iframe째 갈아끼우므로 누수가 원천 차단된다. */
+
+  function cellValue(v) {
+    if (v === null || v === undefined || v === "") return "";
+    if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+    if (Array.isArray(v)) return v.map(function (x) { return typeof x === "object" ? JSON.stringify(x) : x; }).join(" → ");
+    if (typeof v === "object") return JSON.stringify(v);
+    return v;
+  }
+
+  var CURRENT = { file: null, user: "guest" };
+  var COLS = []; // 마지막 render의 열 이름 (get-rows·cellUpdated 훅에서 사용)
+  // 헤더 구조 상수 — render()가 채운다. 헤더 행을 읽는 모든 지점이 이 값만 참조한다.
+  var SHEET_META = { headerRows: 5, idRow: 2 };
+
+  function fileSelect() { return document.getElementById("sheet-file"); }
+
+  function setFileOptions(files, current) {
+    var sel = fileSelect();
+    sel.innerHTML = "";
+    var list = files && files.length ? files.slice() : [current];
+    if (list.indexOf(current) === -1) list.unshift(current);
+    list.forEach(function (name) {
+      var o = document.createElement("option");
+      o.value = name;
+      o.textContent = name;
+      sel.appendChild(o);
+    });
+    sel.value = current;
+  }
+
+  function setupToolbar(payload) {
+    var bar = document.getElementById("sheet-toolbar");
+    if (!payload.file) {
+      bar.classList.remove("on");
+      document.body.classList.remove("with-toolbar");
+      return;
+    }
+    CURRENT.file = payload.file;
+    CURRENT.user = payload.user || "guest";
+    setFileOptions(payload.files, payload.file);
+    bar.classList.add("on");
+    document.body.classList.add("with-toolbar");
+  }
+
+  fileSelect().addEventListener("change", function () {
+    var name = fileSelect().value;
+    if (name === CURRENT.file) return;
+    if (!window.confirm("'" + name + "' 파일을 로드합니다.\n저장하지 않은 현재 데이터셋 변경은 사라집니다. 계속할까요?")) {
+      fileSelect().value = CURRENT.file;
+      return;
+    }
+    fetch("api/dataset/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ file: name, user: CURRENT.user }),
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.j.error || "로드 실패");
+        window.parent.postMessage({ type: "dataset-loaded", file: res.j.file, count: res.j.count }, location.origin);
+      })
+      .catch(function (e) {
+        fileSelect().value = CURRENT.file;
+        window.parent.postMessage({ type: "dataset-save-failed", message: "로드 실패: " + String(e.message) }, location.origin);
+      });
+  });
+
+  function saveDataset(mode) {
+    var path = mode === "saveas" ? "api/dataset/saveas" : "api/dataset/save";
+    fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ user: CURRENT.user }),
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.j.error || "저장 실패");
+        CURRENT.file = res.j.file;
+        document.getElementById("sheet-file").textContent = res.j.file;
+        window.parent.postMessage({ type: "dataset-saved", file: res.j.file,
+                                    count: res.j.count, saved_as_new: !!res.j.saved_as_new }, location.origin);
+      })
+      .catch(function (e) {
+        window.parent.postMessage({ type: "dataset-save-failed", message: String(e.message) }, location.origin);
+      });
+  }
+  document.getElementById("sheet-save").addEventListener("click", function () { saveDataset("save"); });
+  document.getElementById("sheet-saveas").addEventListener("click", function () { saveDataset("saveas"); });
+
+  function render(payload) {
+    setupToolbar(payload);
+    var records = payload.records || [];
+    var cols = payload.cols || [];
+    COLS = cols.slice();
+    /* 헤더: group(병합) → description → id → type → label. HEADER_ROWS·ID_ROW는
+       이 파일 전체가 참조하는 단일 상수 — 헤더 행 수를 바꾸면 여기만 고친다. */
+    var fields = payload.fields || cols.map(function (c) { return { id: c, group: "", label: "", type: "", description: "" }; });
+    var HEAD_ROWS = [
+      { key: "group", h: 24 },
+      { key: "description", h: 40 },
+      { key: "id", h: 24 },
+      { key: "type", h: 22 },
+      { key: "label", h: 24 },
+    ];
+    var HEADER_ROWS = HEAD_ROWS.length;
+    var ID_ROW = 2;
+    var celldata = [];
+    var merge = {};
+    HEAD_ROWS.forEach(function (hr, r) {
+      cols.forEach(function (c, ci) {
+        var f = fields[ci] || {};
+        var text = String((hr.key === "id" ? (f.id || c) : (f[hr.key] || "")) || "");
+        var v = { v: text, m: text, bl: r === ID_ROW ? 1 : 0, bg: "#eef1f4", fc: "#344054",
+                  ct: { fa: "@", t: "s" }, tb: "2", vt: 0 };
+        if (hr.key === "group") { v.bg = "#dde3ea"; v.bl = 1; v.ht = 0; }
+        else if (hr.key === "description") { v.fc = "#667085"; v.fs = 9; }
+        else if (hr.key === "type") { v.fc = "#98a2b3"; v.fs = 9; }
+        celldata.push({ r: r, c: ci, v: v });
+      });
+    });
+    /* group 행 병합: 같은 group이 연속한 열 구간을 하나로 (Luckysheet는 config.merge와
+       셀의 mc를 모두 요구 — 하나만 넣으면 가려질 셀이 그대로 보인다) */
+    var gcells = {};
+    celldata.forEach(function (cd) { if (cd.r === 0) gcells[cd.c] = cd.v; });
+    for (var i = 0; i < cols.length;) {
+      var j = i;
+      var g = (fields[i] || {}).group || "";
+      while (j < cols.length && (((fields[j] || {}).group || "") === g)) j += 1;
+      if (j - i > 1) {
+        merge["0_" + i] = { r: 0, c: i, rs: 1, cs: j - i };
+        if (gcells[i]) gcells[i].mc = { r: 0, c: i, rs: 1, cs: j - i };
+        for (var k = i + 1; k < j; k++) { if (gcells[k]) gcells[k].mc = { r: 0, c: i }; }
+      }
+      i = j;
+    }
+    records.forEach(function (rec, ri) {
+      cols.forEach(function (c, ci) {
+        var raw = rec[c];
+        var missing = raw === null || raw === undefined || raw === "";
+        var val = cellValue(raw);
+        var v;
+        if (typeof val === "number") v = { v: val, m: String(val), ct: { fa: "General", t: "n" } };
+        else v = { v: String(val), m: String(val), ct: { fa: "@", t: "s" } };
+        /* 시트 배경색은 PASS/FAIL만 — 빈 값 노랑·추가분 녹색은 HTML 표에서만 표시 */
+        if (val === "PASS") { v.bg = "#e2f5ec"; v.fc = "#12805c"; v.bl = 1; }
+        else if (val === "FAIL") { v.bg = "#fdecea"; v.fc = "#b42318"; v.bl = 1; }
+        /* 편집 대상이 아닌 열(행 식별자·자동 관리 meta)은 회색 — 반영 시에도 무시됨 */
+        if ((payload.idCol && c === payload.idCol) ||
+            (payload.metaCols && payload.metaCols.indexOf(c) !== -1)) { v.bg = "#eef1f4"; v.fc = "#98a2b3"; }
+        celldata.push({ r: ri + HEADER_ROWS, c: ci, v: v });
+      });
+    });
+    var columnlen = {};
+    cols.forEach(function (c, ci) {
+      var f = fields[ci] || {};
+      /* description은 매우 길어 폭 계산에서 제외 (줄바꿈으로 처리) */
+      var maxLen = Math.max(String(f.id || c).length, String(f.label || "").length,
+        records.reduce(function (m, r) {
+          return Math.max(m, String(cellValue(r[c])).length);
+        }, 0));
+      columnlen[ci] = Math.min(Math.max(70, maxLen * 8 + 24), 260);
+    });
+    var rowlen = {};
+    HEAD_ROWS.forEach(function (hr, r) { rowlen[r] = hr.h; });
+    var options = {
+      container: "luckysheet",
+      lang: "en",
+      showinfobar: false,
+      showsheetbar: false,
+      showstatisticBar: false,
+      sheetFormulaBar: false,
+      showtoolbar: false,
+      enableAddRow: false,
+      enableAddBackTop: false,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      data: [{
+        name: "records", index: 0, status: 1, order: 0,
+        /* single(1행 편집) 모드는 헤더+데이터 행만 — 빈 줄이 있으면 새 행 추가로 오해됨 */
+        row: payload.single ? records.length + HEADER_ROWS : Math.max(records.length + HEADER_ROWS + 7, 20),
+        column: Math.max(cols.length + 2, 10),
+        celldata: celldata,
+        config: { columnlen: columnlen, rowlen: rowlen, merge: merge },
+      }],
+    };
+    /* 편집 차단: 헤더(스키마) 행과 보호 열(id·user_id·created_at·updated_at)은
+       셀 수정 자체를 거부한다 — cellUpdateBefore가 false를 반환하면 luckysheet가
+       업데이트를 취소한다. (적용 시 검증·서버 검증은 별도 안전망) */
+    var protectedCols = [].concat(payload.idCol || []).concat(payload.metaCols || []);
+    options.hook = {};
+    /* 헤더 보호는 항상 건다 — 헤더가 5행이라 실수로 덮어쓸 표면이 넓다 */
+    options.hook.cellUpdateBefore = function (r, c) {
+      if (r < HEADER_ROWS) {
+        window.parent.postMessage({ type: "edit-blocked",
+          what: "헤더 " + HEAD_ROWS[r].key + " 행(스키마)" }, location.origin);
+        return false;
+      }
+      var col = COLS[c];
+      if (protectedCols.indexOf(col) !== -1) {
+        window.parent.postMessage({ type: "edit-blocked", what: "'" + col + "' 열" }, location.origin);
+        return false;
+      }
+    };
+    if (payload.syncEdits) {
+      /* 단일 행 편집 모드: 셀 수정 시 부모 modal 폼으로 즉시 동기화 */
+      options.hook.cellUpdated = function (r, c, oldValue, newValue) {
+        if (r < HEADER_ROWS) return; /* 헤더 행 무시 */
+        var val = null;
+        if (newValue) val = (newValue.v !== undefined && newValue.v !== null) ? newValue.v : (newValue.m != null ? newValue.m : null);
+        if (val === "") val = null;
+        window.parent.postMessage({ type: "cell-edited", colName: COLS[c] || null, row: r - HEADER_ROWS, value: val }, location.origin);
+      };
+    }
+    SHEET_META = { headerRows: HEADER_ROWS, idRow: ID_ROW };
+    luckysheet.create(options);
+  }
+
+  /* 헤더의 id 행에서 열 이름(=field id) 추출 — collectRows와 get-rows가 공용으로 쓴다.
+     group·label 행에서 읽으면 반환 객체의 key가 id가 아니게 되어 저장이 전부 어긋난다. */
+  function headerIds(data) {
+    return ((data || [])[SHEET_META.idRow] || []).map(function (cell) {
+      return cell && cell.v != null ? String(cell.v) : (cell && cell.m != null ? String(cell.m) : "");
+    });
+  }
+
+  /* 부모가 시트의 현재 내용을 행 배열로 요청 (전체 편집 적용·폼 가져오기) */
+  function collectRows() {
+    var lf = luckysheet.getluckysheetfile()[0];
+    var data = lf.data || [];
+    var header = headerIds(data);
+    var rows = [];
+    for (var r = SHEET_META.headerRows; r < data.length; r++) {
+      var arr = data[r] || [];
+      var obj = {};
+      var any = false;
+      for (var c = 0; c < header.length; c++) {
+        if (!header[c]) continue;
+        var cell = arr[c];
+        var val = cell ? (cell.v !== undefined && cell.v !== null ? cell.v : (cell.m != null ? cell.m : null)) : null;
+        if (val === "") val = null;
+        obj[header[c]] = val;
+        if (val !== null && val !== undefined) any = true;
+      }
+      if (any) rows.push(obj);
+    }
+    return rows;
+  }
+
+  /* 휠 체이닝: 시트가 해당 방향으로 더 스크롤될 수 없으면 luckysheet의 휠
+     핸들러에 이벤트를 주지 않는다. iframe 문서 자체도 스크롤할 게 없으므로
+     브라우저가 부모 페이지 스크롤로 자연스럽게 넘긴다(스크롤 불가 해소). */
+  function chainWheel(e) {
+    var bar = document.getElementById("luckysheet-scrollbar-y");
+    var canScroll = false;
+    if (bar && bar.scrollHeight > bar.clientHeight) {
+      canScroll = e.deltaY > 0
+        ? bar.scrollTop + bar.clientHeight < bar.scrollHeight - 1
+        : bar.scrollTop > 0;
+    }
+    if (!canScroll) e.stopImmediatePropagation();
+  }
+  window.addEventListener("wheel", chainWheel, { capture: true, passive: false });
+  window.addEventListener("mousewheel", chainWheel, { capture: true, passive: false });
+
+  window.addEventListener("message", function (ev) {
+    if (ev.origin !== location.origin || ev.source !== window.parent) return;
+    var d = ev.data || {};
+    if (d.type === "render-records") {
+      try { render(d.payload || {}); } catch (e) {
+        document.getElementById("luckysheet").innerHTML =
+          '<div style="padding:16px;color:#b42318;font:13px sans-serif">Luckysheet 초기화 실패: ' +
+          String(e.message).replace(/[<>&]/g, "") + "</div>";
+      }
+    }
+    if (d.type === "get-rows") {
+      try {
+        var lf0 = luckysheet.getluckysheetfile()[0];
+        var header = headerIds(lf0.data).filter(function (h) { return h !== ""; });
+        window.parent.postMessage({ type: "sheet-rows", rows: collectRows(), header: header }, location.origin);
+      } catch (e) {
+        window.parent.postMessage({ type: "dataset-save-failed", message: "시트 읽기 실패: " + String(e.message) }, location.origin);
+      }
+    }
+  });
+
+  window.parent.postMessage({ type: "sheet-ready" }, location.origin);
+})();
+</script>
+</body>
+</html>

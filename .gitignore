@@ -1,0 +1,12 @@
+# 런타임 데이터 (잡 이력·데이터셋·스냅샷)
+data/
+runtime/
+
+# 로컬 LLM 연결 설정 — 토큰이 들어갈 수 있음 (config/llm.json.example만 커밋)
+config/llm.json
+
+__pycache__/
+*.pyc
+
+# 로컬 도구 설정
+.claude/
