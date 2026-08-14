@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>허가되지 않은 사용자입니다</title>
+<style>
+/* 이 페이지는 자체 완결이다 — styles.css나 app.js에 기대지 않는다 */
+:root { --bg:#f6f7f9; --fg:#1c2128; --muted:#667085; --card:#fff; --line:#d9dee5;
+        --accent:#175cd3; --err:#b42318; --mono: Consolas, "D2Coding", monospace; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#12151a; --fg:#e3e8ef; --muted:#98a2b3; --card:#1a1f27; --line:#303a46;
+          --accent:#6ca4f8; --err:#f97066; }
+}
+* { box-sizing: border-box; }
+body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+  padding:20px; background:var(--bg); color:var(--fg);
+  font:14px/1.5 "Malgun Gothic","Apple SD Gothic Neo",sans-serif; }
+.box { width:100%; max-width:380px; background:var(--card); border:1px solid var(--line);
+  border-radius:12px; padding:26px 22px; }
+h1 { font-size:17px; margin:0 0 12px; }
+.who { font-size:12.5px; font-weight:600; margin:0 0 4px; }
+.hint { font-size:11.5px; color:var(--muted); margin:0 0 16px; line-height:1.6; }
+form { display:flex; flex-direction:column; gap:7px; }
+input { font:inherit; font-size:12.5px; padding:8px 10px; border:1px solid var(--line);
+  border-radius:8px; background:var(--card); color:var(--fg); }
+input:focus { outline:none; border-color:var(--accent); }
+button { font:inherit; font-size:12.5px; font-weight:600; padding:8px 14px; border-radius:8px;
+  border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+button:disabled { opacity:.6; cursor:default; }
+.err { color:var(--err); font-size:11.5px; margin:12px 0 0; }
+.meta { font-family:var(--mono); font-size:10px; color:var(--muted); margin:14px 0 0;
+  word-break:break-all; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>허가되지 않은 사용자입니다</h1>
+  <p class="who" id="who">로그인 정보를 확인하는 중…</p>
+  <p class="hint">관리자에게 허가를 요청하거나, 임시 id와 pw로 접속하세요.</p>
+  <form id="f" autocomplete="off">
+    <input id="tid" type="text" placeholder="임시 id" autocomplete="off">
+    <input id="tpw" type="password" placeholder="pw" autocomplete="new-password">
+    <button type="submit">접속</button>
+  </form>
+  <p class="err" id="err" hidden></p>
+  <p class="meta" id="meta"></p>
+</div>
+<script>
+(function () {
+  "use strict";
+  var KEY = "llm-data.access-token";
+  var HOME = "./";
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function api(path, opts) {
+    opts = opts || {};
+    var h = { "Accept": "application/json" };
+    if (opts.body) h["Content-Type"] = "application/json";
+    try { var t = localStorage.getItem(KEY); if (t) h["X-Access-Token"] = t; } catch (e) { /* 사설 모드 */ }
+    return fetch(path, { method: opts.method || "GET", headers: h, cache: "no-store",
+      body: opts.body ? JSON.stringify(opts.body) : undefined })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          if (!r.ok) throw new Error(d.error || d.message || ("HTTP " + r.status));
+          return d;
+        });
+      });
+  }
+
+  // 이미 허가된 상태로 이 주소에 들어왔다면 곧바로 되돌려보낸다
+  api("api/access/check").then(function (info) {
+    if (info && info.allowed) { location.replace(HOME); return; }
+    var u = (info && info.user) || {};
+    document.getElementById("who").innerHTML =
+      (u.id && u.id !== "guest")
+        ? esc(u.id) + (u.name ? " " + esc(u.name) : "") + (u.dept ? " " + esc(u.dept) : "")
+        : "로그인 정보를 확인하지 못했습니다";
+    document.getElementById("meta").textContent = (info && info.reason) || "";
+  }).catch(function (e) {
+    console.log("[access] 확인 실패", String(e));
+    document.getElementById("who").textContent = "로그인 정보를 확인하지 못했습니다";
+  });
+
+  document.getElementById("f").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var err = document.getElementById("err");
+    var btn = e.target.querySelector("button");
+    err.hidden = true;
+    btn.disabled = true;
+    api("api/access/temp", { method: "POST", body: {
+      id: document.getElementById("tid").value, pw: document.getElementById("tpw").value } })
+      .then(function (d) {
+        try { localStorage.setItem(KEY, d.token); } catch (e2) { /* 사설 모드 */ }
+        return api("api/access/check");
+      })
+      .then(function (info) {
+        if (!info || !info.allowed) throw new Error("임시 접속이 거부되었습니다");
+        location.replace(HOME);
+      })
+      .catch(function (e2) {
+        console.log("[access] 임시 접속 실패", String(e2));
+        err.textContent = String(e2.message || e2);
+        err.hidden = false;
+        btn.disabled = false;
+      });
+  });
+
+  document.getElementById("tid").focus();
+})();
+</script>
+</body>
+</html>

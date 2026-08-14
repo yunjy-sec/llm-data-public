@@ -10,17 +10,24 @@
 의존성이 없다(Python 표준 라이브러리만 사용). 설치 단계 없이 바로 띄운다.
 
 ```bash
-python server.py --host 127.0.0.1 --port 8821
+python run_server.py
 ```
 
-브라우저에서 `http://127.0.0.1:8821` 을 연다. 프론트엔드는 별도 빌드가 없다 —
+기본은 `0.0.0.0:8821`이라 다른 PC의 브라우저에서도 접속된다. 프론트엔드는 별도 빌드가 없다 —
 서버가 `web/`을 그대로 서빙하므로 파일을 고치고 새로고침하면 끝이다.
+
+값은 하드코딩하지 않는다. **명령행 인자 > 환경변수 > `config/server.json` > 기본값** 순으로 찾는다.
 
 | 방법 | 명령 | 비고 |
 |---|---|---|
-| 로컬 | `python server.py --host 127.0.0.1 --port 8821` | 데이터는 `<repo>/data` |
-| 외부 접근 | `python server.py --host 0.0.0.0 --port 8821` | 프록시 뒤에 둘 때는 stripPrefix 방식 |
+| 그냥 실행 | `python run_server.py` | `config/server.json`이 있으면 그 값으로 |
+| 포트만 바꿔서 | `python run_server.py --port 9000` | 인자가 가장 우선 |
+| 내 PC에서만 | `python run_server.py --host 127.0.0.1` | 또는 `server.json`의 `host` |
 | 컨테이너 | `docker compose up -d --build` | PERSIST 볼륨 마운트 — `DEPLOY.md` |
+
+`config/server.json`에 `persist`·`runtime`·`config`·`sso_config`·`access_config`를 적으면
+`run_server.py`가 환경변수로 넣어 준 뒤 서버를 띄운다. 예시는 `config/server.json.example`에 있다.
+`python server.py --host ... --port ...`로 직접 띄우는 방식도 그대로 동작한다.
 
 첫 기동 후 **0번 설정 탭**에서 `base_url`을 LLM 서버 위치로 맞추면 바로 변환·대화가 동작한다.
 상단 상태 표시줄의 LLM 상태가 "연결됨"으로 바뀌는지로 확인한다.
@@ -29,7 +36,10 @@ python server.py --host 127.0.0.1 --port 8821
 
 | 구분 | 파일 | 역할 |
 |---|---|---|
+| 실행 | `run_server.py` | `python run_server.py` 진입점. host·port·저장 경로를 설정에서 찾아 넣고 서버를 띄운다 |
 | 백엔드 | `server.py` | HTTP 서버·전체 API·잡 큐·데이터셋/마스터/대화 저장. 저장 경로 상수(`DATA_DIR`·`JOBS_DIR`)가 상단에 있다 |
+| 백엔드 | `access.py` | **접근 제어 전부** — {id, dept}를 받아 들여보낼지만 판단한다. 다른 서비스에 그대로 떼어 쓸 수 있다 |
+| 프론트 | `web/access.js` | 차단 화면·임시 접속·허가 목록 편집. 이 파일만 빼면 제어가 사라진다 |
 | 백엔드 | `sso.py` | **로그인 id 조회 전부** — 실패해도 guest로만 떨어지고 다른 기능에 영향이 없다 |
 | 백엔드 | `llm.py` | **LLM 접점 전부** — endpoint 조립(`chat_url`)·헤더(`_headers`)·요청/파싱(`chat_messages`)·설정 로드·저장. 접목 시 여기만 고친다 |
 | 프론트 | `web/index.html` | 탭·패널 구조와 요소 id |
@@ -38,6 +48,8 @@ python server.py --host 127.0.0.1 --port 8821
 | 프론트 | `web/sheet.html` | Luckysheet 격리 iframe (표 편집) |
 | 설정 | `config/llm.json.example` | 설정 키 예시 — 복사해 `llm.json`으로 쓴다 (실제 파일은 커밋 금지) |
 | 설정 | `config/sso.json.example` | 로그인 id 조회 설정 예시 — 복사해 `sso.json`으로 쓴다 (선택) |
+| 설정 | `config/access.json.example` | 접근 제어 설정 예시 — 복사해 `access.json`으로 쓴다 (선택) |
+| 설정 | `config/server.json.example` | 실행 설정 예시 (host port 저장 경로) — 복사해 `server.json`으로 쓴다 (선택) |
 | 프롬프트 | `prompts/table_to_schema.md` | 변환 시스템 프롬프트. `{{TARGET_SCHEMA}}` 자리에 목표 스키마가 치환된다 |
 
 ## 경로 설정 방법
@@ -60,6 +72,7 @@ python server.py --host 127.0.0.1 --port 8821
 | `LLM_DATA_RUNTIME` | 변환 작업 이력 (**유실 허용**) | `/var/tmp/llm-data` |
 | `LLM_DATA_CONFIG` | 설정 파일 경로를 개별 지정할 때 (PERSIST보다 우선) | `/etc/llm-data/llm.json` |
 | `LLM_DATA_SSO_CONFIG` | SSO 설정 파일 경로를 개별 지정할 때 | `/etc/llm-data/sso.json` |
+| `LLM_DATA_ACCESS_CONFIG` | 접근 제어 설정 파일 경로를 개별 지정할 때 | `/etc/llm-data/access.json` |
 
 ```bash
 LLM_DATA_PERSIST=/srv/llm-data/data LLM_DATA_RUNTIME=/var/tmp/llm-data python server.py --host 0.0.0.0 --port 8821
@@ -132,7 +145,7 @@ YAML로 바꿔도 저장 한 번에 주석은 사라지므로 형식을 바꾼�
       "x-dep-ticket": "credential:TICKET-...",
       "Send-System-Name": "playground",
       "User-Type": "AD_ID",
-      "User-Id": "yunjy",
+      "User-Id": "your.loginid",
       "disabled": {
         "Chat-Id": "{uuid}",
         "Prompt-Msg-Id": "{uuid}",
@@ -201,7 +214,7 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
   "headers": { "User-Type": "AD_ID" },
   "credential_key": "credential:TICKET-...",
   "send_system_name": "playground",
-  "user_id": "yunjy"
+  "user_id": "your.loginid"
 }
 ```
 
@@ -307,7 +320,7 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
 ```
 [SSO] 확인 시작 http://…/api/verify_sso | token 있음(12자) | 헤더 Accept=…, Cookie=****(15자) | body {"token": "****(12자)"}
 [SSO] POST http://…/api/verify_sso -> 200 (1ms, 139B)
-[SSO] 로그인 확인 id=yunjy.sec name=… dept=…
+[SSO] 로그인 확인 id=your.loginid name=… dept=…
 ```
 
 확인 결과는 세션 단위로 `cache_seconds`(기본 60초) 캐시한다. 화면은 15초마다 갱신하되
@@ -318,6 +331,50 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
 `GET /api/whoami`(토큰 없이 확인), `GET /api/sso/health`(생사).
 
 자격 정보가 담기는 `config/sso.json`은 `llm.json`과 함께 커밋 대상이 아니다 (PERSIST 볼륨에 둔다).
+
+## 접근 제어 (선택, 독립 모듈)
+
+허용한 사람만 들여보내는 기능이다. `access.py` + `web/access.js` 두 파일이 전부이고
+**sso도 llm도 import하지 않는다** — `{id, dept}`를 받아 들여보낼지만 판단하므로 다른
+서비스에 그대로 떼어 쓸 수 있다. `index.html`의 `<script src="access.js">` 한 줄을 지우면
+제어가 사라지고 앱은 그대로 동작한다.
+
+설정은 `config/access.json`이며, **파일이 없거나 allow가 비어 있으면 아무도 막지 않는다.**
+
+```json
+{
+  "allow": { "id": ["your.loginid"], "dept": [] },
+  "admin": { "id": ["your.loginid"] },
+  "temp":  [ { "id": "temp", "pw": "바꿔서 쓰세요", "note": "임시 접속" } ],
+  "etc":   { "session_hours": 12 }
+}
+```
+
+- `allow.id` — 허용할 로그인 id (SSO의 `EP_LOGINID`)
+- `allow.dept` — 허용할 부서. **부분 일치**라 이름 표기가 조금 달라도 걸린다
+- `admin.id` — 허가 목록을 편집할 수 있는 사람. 이 사람에게만 헤더에 🔑 버튼이 보인다
+- `temp` — SSO가 막혔을 때 쓰는 임시 자격. **통행증일 뿐이라 화면의 사용자 표시는 SSO 결과 그대로다**
+
+허용되지 않으면 "허가되지 않은 사용자입니다" 화면이 전체를 덮고, 거기서 임시 id/pw로
+들어올 수 있다. 임시 토큰은 HMAC 서명만으로 검증하므로 서버를 재기동해도 유효하고
+별도 저장이 필요 없다(서명 키는 첫 사용 때 `etc.secret`에 자동 생성된다).
+
+관련 API: `GET /api/access/check`, `POST /api/access/temp`, `GET·POST /api/access/rules`(admin만).
+
+> 지금은 **화면 단계의 차단**이다. `/api/*`까지 막으려면 `server.py`의 요청 진입부에서
+> `access.decide(...)`를 한 번 부르면 된다 — 판단 로직은 이미 이 모듈에 다 있다.
+
+## 상태 확인 주기
+
+화면이 상태를 다시 물어보는 주기는 설정에서 온다(하드코딩 아님). 기본 30초, 최소 5초.
+
+| 대상 | 설정 위치 |
+|---|---|
+| LLM | `llm.json`의 `poll_seconds` (프로필 구성이면 `etc.poll_seconds`) |
+| SSO | `sso.json`의 `etc.poll_seconds` |
+
+로그는 **실패했을 때만** 남는다. 서버 터미널의 `[SSO]`·`[ACCESS]` 줄과 브라우저 콘솔의
+`[sso]`·`[access]` 줄이며, 정상 흐름은 조용히 지나간다.
 
 ## 코드 수정이 필요한 경우
 

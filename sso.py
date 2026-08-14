@@ -40,7 +40,8 @@ service 상태 (화면 LED 판단용)
   - "unconfigured": 설정 파일이 없거나 verify.url이 비어 있음 — LED 없이 그냥 guest
 id를 실제로 가져오면 초록 LED와 함께 id 이름 부서가 표시된다.
 
-조회 과정은 서버 터미널에 [SSO] 접두어로 남고, 같은 내용이 브라우저 console에도 찍힌다.
+로그는 실패했을 때만 남긴다. 서버 터미널의 [SSO] 줄과 브라우저 console의 [sso] 줄이며,
+어디로 무엇을 보냈고 무엇을 받았는지가 함께 찍힌다. 정상 흐름은 조용히 지나간다.
 자격 정보가 담긴 헤더(Cookie·Authorization 등)는 로그에서 값 대신 길이만 표시된다.
 """
 
@@ -141,6 +142,15 @@ def configured(cfg=None):
     return bool(endpoint(load_config() if cfg is None else cfg))
 
 
+def poll_seconds(cfg=None):
+    """화면이 상태를 다시 물어보는 주기(초). etc.poll_seconds, 기본 30."""
+    cfg = load_config() if cfg is None else cfg
+    try:
+        return max(5, min(int(_etc(cfg, "poll_seconds", 30) or 30), 3600))
+    except (TypeError, ValueError):
+        return 30
+
+
 def public_config(cfg=None):
     """브라우저가 1단계를 수행하는 데 필요한 정보만. 자격 정보는 담지 않는다."""
     cfg = load_config() if cfg is None else cfg
@@ -148,6 +158,7 @@ def public_config(cfg=None):
     return {
         "configured": configured(cfg),
         "verify_url": endpoint(cfg),
+        "poll_seconds": poll_seconds(cfg),
         "local": {
             "url": str(local.get("url") or "").strip(),
             "request": local.get("request"),
@@ -305,8 +316,9 @@ def _request(verify, url, headers, body, timeout, method):
         conn.request(method, path, body=data, headers=headers)
         r = conn.getresponse()
         raw = r.read(MAX_BYTES)
-        _log("%s %s -> %s (%dms, %dB)" % (method, url, r.status,
-                                          int((time.time() - started) * 1000), len(raw)))
+        if r.status >= 400:  # 정상 응답은 조용히 지나간다 — 오류만 남긴다
+            _log("%s %s -> %s (%dms, %dB)" % (method, url, r.status,
+                                              int((time.time() - started) * 1000), len(raw)))
         return r.status, raw
     finally:
         conn.close()
@@ -342,11 +354,6 @@ def whoami(incoming_headers=None, values=None):
     timeout = _num(_etc(verify, "timeout", 3), 3)
     result = {"id": GUEST, "source": "none", "service": "down", "url": url}
 
-    _log("확인 시작 %s | 1단계 값 %s | 헤더 %s | body %s" % (
-        url,
-        ", ".join("%s(%d자)" % (k, len(str(v))) for k, v in sorted(values.items())) or "없음",
-        ", ".join("%s=%s" % (k, _mask(k, v)) for k, v in sorted(headers.items())),
-        _preview({k: _mask(k, v) for k, v in body.items()}, 200)))
     try:
         status, raw = _request(verify, url, headers, body, timeout, method)
         if status == 405:
@@ -381,12 +388,13 @@ def whoami(incoming_headers=None, values=None):
     except Exception as e:  # 연결 실패·타임아웃 — 서비스가 죽은 것으로 본다
         result["error"] = "%s: %s" % (type(e).__name__, e)
 
-    if result["source"] == "sso":
-        _log("로그인 확인 id=%s name=%s dept=%s" % (
-            result["id"], result.get("name", "-"), result.get("dept", "-")))
-    else:
-        _log("guest 유지 (service=%s) %s%s" % (
-            result["service"], result.get("error", ""),
+    if result["source"] != "sso":
+        # 실패만 남긴다. 어디로 무엇을 보냈는지까지 함께 적어야 원인을 찾을 수 있다.
+        _log("실패 %s | service=%s | 1단계 값 %s | body %s | %s%s" % (
+            url, result["service"],
+            ", ".join("%s(%d자)" % (k, len(str(v))) for k, v in sorted(values.items())) or "없음",
+            _preview({k: _mask(k, v) for k, v in body.items()}, 160),
+            result.get("error", ""),
             " | 응답 " + result["response"] if result.get("response") else ""))
 
     ttl = _num(_etc(cfg, "cache_seconds", 60), 60)
@@ -427,7 +435,7 @@ def health():
         _log("생사 확인 실패 %s:%s %s" % (parts.hostname, port, err))
     with _LOCK:
         _HEALTH[0], _HEALTH[1] = now + timeout, service
-    out = {"service": service, "url": url}
+    out = {"service": service, "url": url, "poll_seconds": poll_seconds(cfg)}
     if err:
         out["error"] = err
     return out

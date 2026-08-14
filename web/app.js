@@ -190,6 +190,7 @@
       renderHistory();
     } catch (e) {
       setDot(false);
+      console.log("[init] 초기화 실패", e && e.stack ? e.stack : e);
       toast("초기화 실패: " + e.message);
     }
     refreshLlmStatus();
@@ -1530,7 +1531,7 @@
       const spec = o[k] || {};
       const desc = spec.kind === "range"
         ? spec.min + "~" + spec.max
-        : (spec.values || []).join(", ");
+        : asList(spec.values).join(", ");
       const dflt = spec.default === undefined || spec.default === null ? "" : " default " + spec.default;
       return '<span class="pchip">' + esc(k) + " " + esc(desc) + esc(dflt) + "</span>";
     });
@@ -1711,7 +1712,7 @@
         '      "x-dep-ticket": "credential:TICKET-...",\n' +
         '      "Send-System-Name": "playground",\n' +
         '      "User-Type": "AD_ID",\n' +
-        '      "User-Id": "yunjy",\n' +
+        '      "User-Id": "your.loginid",\n' +
         '      "disabled": {\n' +
         '        "Chat-Id": "{uuid}",\n' +
         '        "Prompt-Msg-Id": "{uuid}",\n' +
@@ -2307,6 +2308,14 @@
 
   // 옵션 바 구성은 설정(config의 body)에서 내려온 선택 항목으로 만든다.
   // 모델 선택 + 선택 가능한 body 항목들 = 이 화면의 옵션 필드.
+  // 선택지 목록 정규화. 배열이 아니어도 화면이 멈추지 않게 한다.
+  function asList(v) {
+    if (Array.isArray(v)) return v;
+    if (v === null || v === undefined || v === "") return [];
+    if (typeof v === "object") return Object.values(v);
+    return [v];
+  }
+
   function optFields() {
     const keys = new Set();
     Object.keys(state.modelOptions || {}).forEach((m) => {
@@ -2372,7 +2381,9 @@
           const v = (want !== undefined && want !== "") ? want : dflt;
           if (v !== undefined && v !== null) el(f.id).value = v;
         } else {
-          const vals = spec.values || [];
+          // 설정이 어떤 모양으로 오든 화면이 죽지 않게 목록으로 맞춘다
+          // (객체면 값들을, 문자열이면 그 하나를 쓴다)
+          const vals = asList(spec.values);
           slot.innerHTML = '<select id="' + prefix + "-" + f.id + '" class="optsel" title="' + esc(f.title) + '">' +
             vals.map((v) => '<option value="' + esc(v) + '">' + esc(v) + "</option>").join("") + "</select>";
           const v = (want && vals.map(String).indexOf(String(want)) >= 0) ? want : dflt;
@@ -3544,6 +3555,7 @@
     try {
       const h = await api("api/llm/health");
       const el = $("#llm-status");
+      if (h.poll_seconds) state.llmPoll = Number(h.poll_seconds) || state.llmPoll;
       if (!h.reachable) {
         el.innerHTML = "LLM <b>not connected</b>";
         el.title = (h.error || "") + (h.url ? "\n" + h.url : "");
@@ -3555,6 +3567,7 @@
         el.title = "No status API on this endpoint (requests work normally)\n" + (h.url || "");
         return;
       }
+      if (h.poll_seconds) state.llmPoll = Number(h.poll_seconds) || state.llmPoll;
       const ex = h.executor || {};
       const busy = ex.running ? " running(" + esc(ex.model || "?") + (ex.queued ? ", queued " + esc(ex.queued) : "") + ")" : "";
       const auth = h.auth && h.auth !== "ok" ? " auth: " + esc(h.auth) : "";
@@ -3585,15 +3598,16 @@
       : "";
     // 조회 결과가 바뀔 때마다 콘솔에 남긴다 (같은 상태를 반복해서 찍지는 않는다).
     // 서버 터미널에도 같은 내용이 [SSO] 접두어로 남는다.
+    // 로그는 실패했을 때만 남긴다 (같은 상태를 반복해서 찍지는 않는다)
     const sig = [s.service, s.source, s.status, s.error].join("|");
-    if (sig !== state.ssoSig) {
+    if (!ok && sig !== state.ssoSig) {
       state.ssoSig = sig;
-      console.log("[sso] " + (ok ? "signed in" : down ? "service not responding" : "no sign-in fields"), {
+      console.log("[sso] " + (down ? "service not responding" : "no sign-in fields"), {
         url: s.url, status: s.status, service: s.service, source: s.source,
-        id: s.id, name: s.name, dept: s.dept,
         method_used: s.method_used, error: s.error, response: s.response,
       });
     }
+    if (ok) state.ssoSig = sig;
     const meta = document.getElementById("login-meta");
     if (meta) {
       const parts = [s.name, s.dept].filter(Boolean);
@@ -3614,7 +3628,8 @@
         if (done) return;
         done = true;
         try { if (ws) ws.close(); } catch (e) { /* 이미 닫힘 */ }
-        console.log("[sso] local agent " + url, out);
+        // 실패했을 때만 남긴다. 경로를 맞출 수 있도록 원본 메시지를 함께 찍는다.
+        if (out && out.error) console.log("[sso] local agent " + url, out);
         resolve(out);
       };
       const timer = setTimeout(() => finish({ error: "timeout " + local.timeout + "s" }),
@@ -3626,12 +3641,9 @@
         return finish({ error: String(e) });
       }
       ws.onopen = () => {
-        console.log("[sso] local agent connected " + url);
         const req = local.request;
         if (req !== undefined && req !== null && req !== "") {
-          const msg = typeof req === "string" ? req : JSON.stringify(req);
-          console.log("[sso] local agent send", msg);
-          ws.send(msg);
+          ws.send(typeof req === "string" ? req : JSON.stringify(req));
         }
       };
       ws.onmessage = (ev) => {
@@ -3683,6 +3695,7 @@
   async function ssoSignIn() {
     try {
       const cfg = await api("api/sso/config");
+      if (cfg.poll_seconds) state.ssoPoll = Number(cfg.poll_seconds) || state.ssoPoll;
       if (!cfg.configured) return null;               // 설정 없음 — SSO를 시도하지 않는다
       if (!(cfg.local || {}).url) return null;        // 1단계 없음 — 쿠키만으로 확인하는 구성
       const got = await ssoLocalToken(cfg.local);
@@ -3703,6 +3716,7 @@
     try {
       if (state.ssoUser) {
         const h = await api("api/sso/health");
+        if (h.poll_seconds) state.ssoPoll = Number(h.poll_seconds) || state.ssoPoll;
         applySsoState(Object.assign({}, state.ssoUser, { service: h.service, error: h.error }));
         return;
       }
@@ -3726,8 +3740,9 @@
       const start = Number(el.getAttribute("data-start") || 0);
       if (start) el.textContent = Math.max(0, Math.round((Date.now() - start) / 1000)) + "초";
     });
-    if (state.tick % 5 === 0) refreshLlmStatus();
-    if (state.tick % 15 === 0) refreshSsoStatus();
+    // 주기는 설정에서 온다 (llm.json의 poll_seconds, sso.json의 etc.poll_seconds)
+    if (state.tick % (state.llmPoll || 30) === 0) refreshLlmStatus();
+    if (state.tick % (state.ssoPoll || 30) === 0) refreshSsoStatus();
   }, 1000);
 
   // ---- 이벤트 ----

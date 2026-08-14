@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 import llm
 import sso
+import access
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
@@ -46,6 +47,8 @@ STATIC_FILES = {
     "index.html": "text/html; charset=utf-8",
     "styles.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "access.js": "text/javascript; charset=utf-8",  # 접근 제어 (독립 모듈)
+    "denied.html": "text/html; charset=utf-8",      # 허가되지 않은 사용자 안내 페이지
     "sheet.html": "text/html; charset=utf-8",
 }
 VENDOR_TYPES = {
@@ -538,6 +541,34 @@ def chat_cfg_with_options(body, cfg):
     return cfg, None
 
 
+def call_cancellable(pending_key, fn, poll=0.2):
+    """LLM 호출을 별도 스레드에서 돌리고, 정지되면 기다리지 않고 곧바로 돌아온다.
+
+    소켓을 닫아 깨우는 방법은 플랫폼을 탄다(Windows는 대기 중인 recv가 close에도
+    shutdown에도 풀리지 않는다). 그래서 "응답을 기다리지 않는" 쪽으로 해결한다.
+    남은 스레드는 응답이 오면 그대로 버린다.
+    반환: (결과, cancelled)"""
+    box = {}
+    done = threading.Event()
+
+    def run():
+        try:
+            box["ok"] = fn()
+        except BaseException as e:  # 그대로 호출부로 올려 기존 오류 처리를 태운다
+            box["err"] = e
+        finally:
+            done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    while not done.wait(poll):
+        if (_CHAT_PENDING.get(pending_key) or {}).get("cancelled"):
+            llm.abort(pending_key)  # 되는 환경에서는 업스트림 연결도 끊는다
+            return None, True
+    if "err" in box:
+        raise box["err"]
+    return box.get("ok"), False
+
+
 def chat_lock(chat_id):
     # chat 단위 직렬화: send의 load→LLM→save 구간과 branch/update의 load→save 구간이
     # 같은 chat에서 겹치며 서로의 저장을 덮어쓰는 lost update를 막는다 (다른 chat은 병행).
@@ -879,6 +910,25 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:  # sso 모듈 문제로 화면이 막히지 않게 한다
                     return self._json({"id": "guest", "source": "none", "service": "down",
                                        "error": "%s: %s" % (type(e).__name__, e)})
+            if path == "/api/access/check":
+                # 접근 판단. access.py는 sso를 모르므로 서버가 사용자 정보를 넘겨준다.
+                try:
+                    who = sso.whoami(self.headers)
+                except Exception:
+                    who = {"id": "guest", "source": "none", "service": "down"}
+                tok = (self.headers.get("X-Access-Token") or "").strip()
+                out = access.decide({"id": who.get("id"), "dept": who.get("dept")}, tok)
+                out["user"] = who
+                return self._json(out)
+            if path == "/api/access/rules":
+                try:
+                    who = sso.whoami(self.headers)
+                except Exception:
+                    who = {}
+                if not access.can_admin({"id": who.get("id")},
+                                        (self.headers.get("X-Access-Token") or "").strip()):
+                    return self._error(403, "허가 목록을 볼 권한이 없습니다", "E-1007")
+                return self._json(access.rules())
             if path == "/api/sso/config":
                 # 1단계(로컬 에이전트 웹소켓)를 브라우저가 수행하는 데 필요한 정보만 — 자격 정보는 없다
                 try:
@@ -1072,6 +1122,25 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/apps/llm-data"):
             path = path[len("/apps/llm-data"):] or "/"
         try:
+            if path == "/api/access/temp":
+                # 임시 id/pw -> 통행증(토큰). 화면의 사용자 표시는 SSO 결과 그대로 둔다.
+                body = self._body() or {}
+                tok = access.temp_login(body.get("id"), body.get("pw"))
+                if not tok:
+                    return self._error(401, "임시 id 또는 pw가 맞지 않습니다", "E-1008")
+                return self._json({"token": tok})
+            if path == "/api/access/rules":
+                try:
+                    who = sso.whoami(self.headers)
+                except Exception:
+                    who = {}
+                if not access.can_admin({"id": who.get("id")},
+                                        (self.headers.get("X-Access-Token") or "").strip()):
+                    return self._error(403, "허가 목록을 편집할 권한이 없습니다", "E-1007")
+                try:
+                    return self._json(access.save_rules(self._body() or {}))
+                except ValueError as e:
+                    return self._error(400, str(e), "E-1001")
             if path == "/api/sso/verify":
                 # 1단계에서 브라우저가 받은 토큰으로 2단계(verify_sso) 확인.
                 # 실패해도 guest를 돌려줄 뿐 다른 기능에 영향이 없다.
@@ -1326,8 +1395,12 @@ class Handler(BaseHTTPRequestHandler):
                                                  "token": str(body.get("client_token") or "")}
                     try:
                         try:
-                            content, usage, latency_ms = llm.chat_messages(
-                                llm_messages, cfg=cfg, tag=chat["id"], meta_out=req_meta)
+                            got, stopped = call_cancellable(chat["id"], lambda: llm.chat_messages(
+                                llm_messages, cfg=cfg, tag=chat["id"], meta_out=req_meta,
+                                key=chat["id"]))
+                            if stopped:
+                                return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
+                            content, usage, latency_ms = got
                         except llm.LLMError as e:
                             # 사용자가 정지한 경우엔 오류가 아니라 취소로 응답한다
                             if (_CHAT_PENDING.get(chat["id"]) or {}).get("cancelled"):
@@ -1387,8 +1460,11 @@ class Handler(BaseHTTPRequestHandler):
                                           "token": str(body.get("client_token") or "")}
                     try:
                         try:
-                            content, usage, latency_ms = llm.chat_messages(
-                                llm_messages, cfg=cfg, tag=cid, meta_out=req_meta)
+                            got, stopped = call_cancellable(cid, lambda: llm.chat_messages(
+                                llm_messages, cfg=cfg, tag=cid, meta_out=req_meta, key=cid))
+                            if stopped:
+                                return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
+                            content, usage, latency_ms = got
                         except llm.LLMError as e:
                             if (_CHAT_PENDING.get(cid) or {}).get("cancelled"):
                                 return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
@@ -1463,8 +1539,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not p:
                     return self._json({"cancelled": False, "reason": "진행 중인 전송이 없음"})
                 p["cancelled"] = True
-                upstream = llm.cancel()  # best-effort — 업스트림이 지원하면 즉시 생성 중단
-                return self._json({"cancelled": True, "upstream": upstream})
+                # 소켓을 끊어 대기 중인 스레드를 즉시 깨운다. 플래그만 세우면 응답이
+                # 다 올 때까지 기다리게 되어 실시간으로 멈추지 않는다.
+                key = cid or next((k for k, v in _CHAT_PENDING.items() if v is p), "")
+                aborted = llm.abort(key)
+                upstream = llm.cancel()  # best-effort — 업스트림이 지원하면 생성 자체도 중단
+                return self._json({"cancelled": True, "aborted": aborted, "upstream": upstream})
             if path == "/api/chat/meta":
                 # 대화 메타 수정: 이름(title)·상위 고정(pinned)·프로젝트 이동(project) — LLM 호출 없음
                 body = self._body() or {}

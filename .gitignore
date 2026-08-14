@@ -5,6 +5,8 @@ runtime/
 # 로컬 연결 설정 — 토큰·자격 정보가 들어갈 수 있음 (.example만 커밋)
 config/llm.json
 config/sso.json
+config/access.json
+config/server.json
 
 __pycache__/
 *.pyc

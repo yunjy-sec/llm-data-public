@@ -10,6 +10,9 @@
 <link rel="stylesheet" href="vendor/highlight/styles/github.min.css" media="(prefers-color-scheme: light)">
 <link rel="stylesheet" href="vendor/highlight/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
 <link rel="stylesheet" href="vendor/katex/katex.min.css">
+<!-- 접근 제어 (독립 모듈). 이 줄만 지우면 제어가 사라지고 앱은 그대로 동작한다.
+     본문이 그려지기 전에 판정해야 내용이 잠깐 보이는 일이 없어 head에 둔다 -->
+<script src="access.js"></script>
 </head>
 <body data-app="llm-data">
 <header>

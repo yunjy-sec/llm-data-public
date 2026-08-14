@@ -7,7 +7,7 @@
       "x-dep-ticket": "credential:TICKET-...",
       "Send-System-Name": "playground",
       "User-Type": "AD_ID",
-      "User-Id": "yunjy",
+      "User-Id": "your.loginid",
       "disabled": {
         "Chat-Id": "{uuid}",
         "Prompt-Msg-Id": "{uuid}",
@@ -16,11 +16,11 @@
     },
     "body": {
       "model": "gpt-oss-120b",
-      "max_tokens": 4096,
       "stream": false,
       "temperature": { "min": 0, "max": 1, "step": 0.1 },
       "reasoning_effort": ["low", "medium", "high"],
       "disabled": {
+        "max_tokens": 4096,
         "messages": "대화 내용은 서비스가 만들어 넣는다",
         "messages.role": "user | assistant | system",
         "messages.content": "메시지 본문"
@@ -30,11 +30,13 @@
       "설명": "최상위 키 이름이 모델 이름이다. 모델마다 url header body etc 한 벌을 온전히 갖는다.",
       "url": "이 모델의 전체 endpoint를 그대로 적는다.",
       "header": "적은 이름과 값 그대로 전송된다(대소문자 보존). 값은 모두 문자열. {uuid} {uuid_hex} {ts}는 요청마다 치환된다.",
-      "body 고정값": "스칼라(model, max_tokens, stream)는 매 요청 그대로 실린다.",
+      "body 고정값": "스칼라(model, stream)는 매 요청 그대로 실린다.",
       "body 선택값": "{min,max,step}이면 그 범위의 수, [\"a\",\"b\"]면 그 목록 중 하나로 화면에 입력칸이 생긴다. 고르지 않으면 보내지 않는다.",
-      "disabled": "header와 body 안의 disabled 블록은 적어만 두고 전송하지 않는다. 켜려면 그 줄을 disabled 밖으로 옮긴다.",
+      "disabled": "header와 body 안의 disabled 블록은 적어만 두고 전송하지 않는다. 켜려면 그 줄을 disabled 밖으로 옮긴다. max_tokens는 여기 있으므로 응답 길이를 제한하지 않는다 — 제한하려면 밖으로 옮긴다.",
       "etc": "여기에 쓴 것은 전송되지 않는다. timeout, probe_timeout, response_schema를 넣으면 이 모델에 그 값으로 동작한다.",
-      "timeout": 900
+      "timeout": 900,
+      "poll_seconds": 30,
+      "poll_seconds 설명": "화면이 LLM 상태를 다시 확인하는 주기(초). 기본 30, 최소 5."
     }
   }
 }

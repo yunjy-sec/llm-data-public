@@ -37,6 +37,7 @@
 import http.client
 import json
 import os
+import threading
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -177,6 +178,16 @@ def req_timeout(cfg):
         return 300
 
 
+def poll_seconds(cfg=None):
+    """화면이 상태를 다시 물어보는 주기(초). config의 poll_seconds, 기본 30.
+    프로필 구성이면 etc에 넣어도 읽는다."""
+    cfg = resolve(cfg if cfg is not None else load_config())
+    try:
+        return max(5, min(int(opt(cfg, "poll_seconds", 30)), 3600))
+    except (TypeError, ValueError):
+        return 30
+
+
 def probe_timeout(cfg):
     """상태 조회·취소 등 보조 호출 타임아웃(초). config의 probe_timeout, 기본 5."""
     cfg = resolve(cfg)
@@ -188,7 +199,7 @@ def probe_timeout(cfg):
 
 EDITABLE_KEYS = ("base_url", "url", "model", "headers", "api_key_env", "timeout", "response_schema",
                  "extra_payload", "model_options", "models", "header_map", "probe_timeout",
-                 "header", "body", "body_by_model", "etc")
+                 "header", "body", "body_by_model", "etc", "poll_seconds")
 
 # 모델별 추가 설정(요청 payload에 실리는 옵션). 해당 모델이 지원하지 않으면 목록이 비고,
 # 프론트는 그 드롭다운을 비활성 상태로 둔다. config의 "model_options"로 덮어쓸 수 있다.
@@ -588,6 +599,7 @@ def status():
         "url": url,
         "model": current_model(cfg),
         "timeout": req_timeout(cfg),
+        "poll_seconds": poll_seconds(cfg),
         "response_schema": bool(opt(cfg, "response_schema")),
         "headers": masked_headers(cfg),
         "credentials": "environment" if cfg.get("api_key_env") else (
@@ -604,7 +616,28 @@ class HttpResult(object):
         self.headers = headers
 
 
-def _http(method, url, cfg, data=None, timeout=30, max_bytes=None):
+# 진행 중인 요청의 소켓. 정지 버튼이 이걸 닫아 대기 중인 스레드를 즉시 깨운다.
+# 플래그만 세우면 응답이 다 올 때까지 기다리게 되어 "실시간 정지"가 되지 않는다.
+_INFLIGHT = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def abort(key):
+    """진행 중인 요청을 소켓 단에서 끊는다. 끊었으면 True."""
+    if not key:
+        return False
+    with _INFLIGHT_LOCK:
+        conn = _INFLIGHT.get(str(key))
+    if conn is None:
+        return False
+    try:
+        conn.close()  # 대기 중인 getresponse()가 즉시 예외로 풀린다
+        return True
+    except Exception:
+        return False
+
+
+def _http(method, url, cfg, data=None, timeout=30, max_bytes=None, key=None):
     """요청 1회. urllib 대신 http.client를 쓰는 이유:
     urllib의 add_header가 헤더 이름을 capitalize()로 바꿔 x-dep-ticket -> X-dep-ticket,
     Send-System-Name -> Send-system-name 처럼 대소문자가 망가진다. 대소문자를 구분하는
@@ -617,6 +650,9 @@ def _http(method, url, cfg, data=None, timeout=30, max_bytes=None):
         path += "?" + parts.query
     conn_cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
     conn = conn_cls(parts.netloc, timeout=timeout)
+    if key:  # 정지 버튼이 찾아 닫을 수 있게 등록
+        with _INFLIGHT_LOCK:
+            _INFLIGHT[str(key)] = conn
     try:
         conn.request(method, path, body=data, headers=_headers(cfg))
         r = conn.getresponse()
@@ -624,6 +660,10 @@ def _http(method, url, cfg, data=None, timeout=30, max_bytes=None):
         raw = r.read(limit) if limit else r.read()
         return HttpResult(r.status, raw, dict(r.getheaders()))
     finally:
+        if key:
+            with _INFLIGHT_LOCK:
+                if _INFLIGHT.get(str(key)) is conn:
+                    _INFLIGHT.pop(str(key), None)
         conn.close()
 
 
@@ -636,7 +676,7 @@ def chat(system, user, schema=None, cfg=None, tag="CHAT", meta_out=None):
     return chat_messages(messages, schema=schema, cfg=cfg, tag=tag, meta_out=meta_out)
 
 
-def chat_messages(messages, schema=None, cfg=None, tag="CHAT", meta_out=None):
+def chat_messages(messages, schema=None, cfg=None, tag="CHAT", meta_out=None, key=None):
     """임의 메시지 배열(다중 턴 대화 이력 포함)로 1회 blocking 호출.
 
     meta_out에 dict를 주면 실제 요청 정보(url, model, payload_bytes, response_format)를 채운다.
@@ -682,7 +722,8 @@ def chat_messages(messages, schema=None, cfg=None, tag="CHAT", meta_out=None):
           % (tag, url, len(body), "YES" if "response_format" in payload else "no", timeout))
     started = time.time()
     try:
-        res = _http("POST", url, cfg, data=body, timeout=timeout, max_bytes=MAX_RESPONSE_BYTES)
+        res = _http("POST", url, cfg, data=body, timeout=timeout,
+                    max_bytes=MAX_RESPONSE_BYTES, key=key)
     except LLMError:
         raise
     except Exception as e:
