@@ -1528,13 +1528,12 @@
   function modelOptsHtml(mid) {
     const o = (state.modelOptions || {})[mid] || {};
     const parts = Object.keys(o).map((k) => {
-      const spec = o[k] || {};
-      const desc = spec.kind === "range"
-        ? spec.min + "~" + spec.max
-        : asList(spec.values).join(", ");
+      const spec = normSpec(o[k]);
+      if (!spec) return "";
+      const desc = spec.kind === "range" ? spec.min + "~" + spec.max : spec.values.join(", ");
       const dflt = spec.default === undefined || spec.default === null ? "" : " default " + spec.default;
       return '<span class="pchip">' + esc(k) + " " + esc(desc) + esc(dflt) + "</span>";
-    });
+    }).filter(Boolean);
     return '<div class="mopts">' +
       (parts.length ? parts.join(" ") : '<span class="cmeta">no extra options</span>') + "</div>";
   }
@@ -2308,12 +2307,36 @@
 
   // 옵션 바 구성은 설정(config의 body)에서 내려온 선택 항목으로 만든다.
   // 모델 선택 + 선택 가능한 body 항목들 = 이 화면의 옵션 필드.
-  // 선택지 목록 정규화. 배열이 아니어도 화면이 멈추지 않게 한다.
+  // 선택지 목록 정규화. 값이 아닌 것(함수 등)은 걸러 화면에 새어 나오지 않게 한다.
   function asList(v) {
-    if (Array.isArray(v)) return v;
-    if (v === null || v === undefined || v === "") return [];
-    if (typeof v === "object") return Object.values(v);
-    return [v];
+    const arr = Array.isArray(v) ? v
+      : (v === null || v === undefined || v === "") ? []
+      : (typeof v === "object") ? Object.keys(v).map((k) => v[k])
+      : [v];
+    return arr.filter((x) => typeof x === "string" || typeof x === "number");
+  }
+
+  // 옵션 스펙 정규화. 서버가 {kind,...}로 주는 것이 정상이지만, 옛 형태(값 배열)나
+  // {values:[...]}, {min,max}만 오는 경우도 그대로 받아들인다.
+  // 배열을 그대로 쓰면 spec.values가 Array.prototype.values(함수)로 잡혀
+  // 드롭다운에 "function values() { [native code] }"가 찍힌다.
+  function normSpec(v) {
+    if (v === null || v === undefined) return null;
+    if (Array.isArray(v)) {
+      const vals = asList(v).map(String);
+      return vals.length ? { kind: "enum", values: vals, default: vals[vals.length - 1] } : null;
+    }
+    if (typeof v !== "object") return null;
+    if (v.kind === "range" || (v.kind === undefined && v.min !== undefined && v.max !== undefined)) {
+      const lo = Number(v.min), hi = Number(v.max), st = Number(v.step || 0.1);
+      if (!isFinite(lo) || !isFinite(hi)) return null;
+      return { kind: "range", min: lo, max: hi, step: st > 0 ? st : 0.1,
+               default: v.default !== undefined ? v.default : hi };
+    }
+    const vals = asList(v.values).map(String);
+    if (!vals.length) return null;
+    return { kind: "enum", values: vals,
+             default: v.default !== undefined ? String(v.default) : vals[vals.length - 1] };
   }
 
   function optFields() {
@@ -2359,7 +2382,7 @@
         const slot = el(f.id + "-slot");
         const wrap = el(f.id + "-wrap");
         if (!slot) return;
-        const spec = opts[f.param];
+        const spec = normSpec(opts[f.param]);
         const want = cur[f.param];
         if (!spec) {
           slot.innerHTML = '<select id="' + prefix + "-" + f.id + '" class="optsel" disabled>' +

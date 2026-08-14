@@ -541,6 +541,30 @@ def chat_cfg_with_options(body, cfg):
     return cfg, None
 
 
+# 접근 제어를 거치지 않는 경로. 차단 페이지 자체와 그 페이지가 쓰는 것들은 열어 둬야 한다.
+ACCESS_OPEN_PATHS = {
+    "/denied.html", "/access.js", "/styles.css", "/favicon.ico",
+    "/api/access/check", "/api/access/temp", "/api/whoami", "/api/health",
+}
+
+
+def access_decision(handler):
+    """이 요청을 들여보낼지. access 설정이 없으면 아무도 막지 않는다(fail-open)."""
+    try:
+        if not access.enabled():
+            return None  # 제어 꺼짐
+        try:
+            who = sso.whoami(handler.headers)
+        except Exception:
+            who = {}
+        tok = (handler.headers.get("X-Access-Token") or "").strip()
+        d = access.decide({"id": who.get("id"), "dept": who.get("dept")}, tok)
+        return None if d.get("allowed") else d
+    except Exception as e:  # 판단이 깨져도 서비스가 멈추면 안 된다
+        print("[ACCESS] 판단 실패, 통과시킵니다: %s" % e, flush=True)
+        return None
+
+
 def call_cancellable(pending_key, fn, poll=0.2):
     """LLM 호출을 별도 스레드에서 돌리고, 정지되면 기다리지 않고 곧바로 돌아온다.
 
@@ -841,6 +865,19 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/apps/llm-data"):
             path = path[len("/apps/llm-data"):] or "/"
         try:
+            # 서버 단 차단 — 클라이언트 스크립트가 없거나 캐시돼도 통과되지 않는다
+            if path not in ACCESS_OPEN_PATHS and not path.startswith("/vendor/"):
+                denied = access_decision(self)
+                if denied is not None:
+                    if path.startswith("/api/"):
+                        return self._error(403, denied.get("reason") or "허가되지 않은 사용자입니다",
+                                           "E-1009")
+                    self.send_response(302)
+                    self.send_header("Location", "denied.html")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
             if path in ("/", "/index.html"):
                 return self._static("index.html")
             name = path.lstrip("/")
@@ -1122,6 +1159,11 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/apps/llm-data"):
             path = path[len("/apps/llm-data"):] or "/"
         try:
+            if path not in ACCESS_OPEN_PATHS:
+                denied = access_decision(self)
+                if denied is not None:
+                    return self._error(403, denied.get("reason") or "허가되지 않은 사용자입니다",
+                                       "E-1009")
             if path == "/api/access/temp":
                 # 임시 id/pw -> 통행증(토큰). 화면의 사용자 표시는 SSO 결과 그대로 둔다.
                 body = self._body() or {}

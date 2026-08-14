@@ -361,8 +361,10 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
 
 관련 API: `GET /api/access/check`, `POST /api/access/temp`, `GET·POST /api/access/rules`(admin만).
 
-> 지금은 **화면 단계의 차단**이다. `/api/*`까지 막으려면 `server.py`의 요청 진입부에서
-> `access.decide(...)`를 한 번 부르면 된다 — 판단 로직은 이미 이 모듈에 다 있다.
+**서버에서도 막는다.** 화면 스크립트가 없거나 캐시돼도 통과되지 않는다.
+차단된 사용자의 요청은 페이지면 `denied.html`로 302, `/api/*`면 403(E-1009)이다.
+차단 페이지 자체와 그 페이지가 쓰는 것(`denied.html`, `access.js`, `styles.css`,
+`/api/access/check`, `/api/access/temp`, `/api/whoami`, `/api/health`, `vendor/`)만 열려 있다.
 
 ## 상태 확인 주기
 
