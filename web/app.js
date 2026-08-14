@@ -165,8 +165,10 @@
       });
       state.modelList = models.models || [];
       state.modelOptions = models.options || {};   // {model: {temperature:[], reasoning_effort:[]}}
+      state.scales = models.scales || {};          // 소요 시간·토큰 색상 범위 (설정에서 온다)
       state.defaultModel = models.default;
       initChatOptbar();
+      renderSystemChips();
       state.examples = examples.examples || [];
       renderExampleButtons();
       if (!$("#schema").value) {
@@ -379,8 +381,7 @@
     if (on) {
       if (!state.tabsHome) state.tabsHome = { parent: nav.parentNode, next: nav.nextSibling };
       if (nav.parentNode !== slot) slot.appendChild(nav);
-      const h = document.querySelector("header");
-      if (h) document.documentElement.style.setProperty("--headh", h.offsetHeight + "px");
+      syncHeadHeight();
       document.body.classList.add("chatfull");
     } else {
       if (state.tabsHome && nav.parentNode === slot) {
@@ -429,6 +430,7 @@
           state.chatId = null;
           state.chatDoc = null;
           $("#chat-system").value = DEFAULT_CHAT_SYSTEM;
+      markSystemChips();
           renderChatList();
           renderChatMessages();
         }
@@ -535,7 +537,7 @@
         timerHtml(job.started_at_ms || job.created_ms) + "</span>";
     }
     if (job.state === "done") {
-      const sec = job.latency_ms != null ? (job.latency_ms / 1000).toFixed(1) + "초" : "";
+      const sec = job.latency_ms != null ? (job.latency_ms / 1000).toFixed(1) + "s" : "";
       return '<span class="chip ok">완료 ' + sec + " " + (job.record_count || 0) + "건</span>";
     }
     return '<span class="chip err">실패</span>';
@@ -544,18 +546,25 @@
   function fmtDur(ms) {
     if (ms == null) return "";
     if (ms < 1000) return ms + "ms";
-    return (ms / 1000).toFixed(1) + "초";
+    return (ms / 1000).toFixed(1) + "s";
+  }
+
+  function elapsedSec(startMs) {
+    return Math.max(0, Math.round((Date.now() - startMs) / 1000));
   }
 
   function elapsedText(startMs) {
-    return Math.max(0, Math.round((Date.now() - startMs) / 1000)) + "초";
+    return elapsedSec(startMs) + "s";
   }
 
-  // 재렌더링 시 "0초"로 초기화되면 1초 tick이 고칠 때까지 0초↔N초로 깜빡인다.
+  // 재렌더링 시 "0s"로 초기화되면 1초 tick이 고칠 때까지 0s↔Ns로 깜빡인다.
   // 처음부터 현재 경과값으로 그려서 리셋을 우회한다.
+  // 대기 중인 시간도 응답 시간과 같은 색 스케일을 따른다 — 오래 걸릴수록 진해진다.
   function timerHtml(startMs) {
     const start = startMs || Date.now();
-    return '<b data-timer data-start="' + start + '">' + elapsedText(start) + "</b>";
+    const sec = elapsedSec(start);
+    return '<b data-timer data-start="' + start + '" style="color:' + latencyColor(sec) + '">' +
+      sec + "s</b>";
   }
 
   function stageStripHtml(steps) {
@@ -1512,7 +1521,97 @@
   });
 
   // ---- 대화 탭 (다중 턴, 이력 유지) ----
-  const DEFAULT_CHAT_SYSTEM = "당신은 정확하고 간결하게 답하는 어시스턴트입니다.";
+  // 기본은 비워 둔다 — 아무 지시도 붙이지 않고 모델 기본 동작 그대로 쓴다.
+  const DEFAULT_CHAT_SYSTEM = "";
+
+  // 자주 쓰는 지시 묶음. 칩을 누르면 아래 입력칸을 그 내용으로 채운다.
+  // 그대로 쓰거나 고쳐 쓰면 되고, 직접 입력해도 된다. 여기만 고치면 칩이 바뀐다.
+  const SYSTEM_PRESETS = [
+    {
+      label: "빠른 대답", tip: "핵심만 짧게. 결론 먼저",
+      text: [
+        "핵심만 짧게 답하세요.",
+        "",
+        "- 결론을 첫 문장에 씁니다. 서론과 인사말은 쓰지 않습니다.",
+        "- 3문장을 넘기지 않습니다. 목록이 필요하면 항목 5개 이내로 줄입니다.",
+        "- 물어본 것만 답하고, 묻지 않은 배경 설명은 덧붙이지 않습니다.",
+        "- 확실하지 않으면 추측하지 말고 모른다고 말합니다.",
+      ].join("\n"),
+    },
+    {
+      label: "기본 대답", tip: "정확하고 간결하게. 근거 한 줄",
+      text: [
+        "정확하고 간결하게 답하세요.",
+        "",
+        "- 결론을 먼저 쓰고, 그렇게 판단한 근거를 한두 줄로 덧붙입니다.",
+        "- 사실과 추정을 구분해 적습니다. 추정이면 그렇다고 밝힙니다.",
+        "- 모르는 것은 지어내지 않습니다. 확인이 필요하면 무엇을 확인해야 하는지 적습니다.",
+        "- 코드나 명령을 줄 때는 그대로 실행할 수 있는 형태로 씁니다.",
+        "- 답이 길어지면 소제목으로 나누되, 불필요하게 늘리지 않습니다.",
+      ].join("\n"),
+    },
+    {
+      label: "상세 전문가 대답", tip: "배경·근거·예외·주의점까지",
+      text: [
+        "해당 분야 전문가로서 깊이 있게 답하세요.",
+        "",
+        "1. 결론을 먼저 제시합니다.",
+        "2. 그 결론의 근거와 전제를 설명합니다. 어떤 조건에서 성립하는지 밝힙니다.",
+        "3. 예외와 실패하는 경우, 흔히 하는 오해를 짚습니다.",
+        "4. 대안이 있으면 장단점을 비교하고, 어느 쪽을 언제 쓰는지 적습니다.",
+        "5. 실제로 적용할 때의 주의점과 확인 방법을 마지막에 정리합니다.",
+        "",
+        "판단이 갈리는 지점은 어느 쪽 근거가 더 강한지 밝히고, 확실하지 않은 부분은",
+        "확실하지 않다고 표시합니다. 근거 없이 단정하지 않습니다.",
+        "필요하면 표나 예시를 써서 비교를 분명히 합니다.",
+      ].join("\n"),
+    },
+    {
+      label: "정형 format 출력", tip: "요청한 형식만 그대로",
+      text: [
+        "요청받은 형식으로만 출력하세요.",
+        "",
+        "- 형식 밖의 인사말, 머리말, 맺음말, 설명을 붙이지 않습니다.",
+        "- JSON을 요청받으면 파싱 가능한 JSON만 출력합니다. 주석과 후행 쉼표를 넣지 않고,",
+        "  코드 펜스로 감싸지 않습니다.",
+        "- 표를 요청받으면 표만 출력합니다. 열 이름과 순서를 요청한 그대로 유지합니다.",
+        "- 값이 없으면 비워 두거나 null을 씁니다. 임의로 채워 넣지 않습니다.",
+        "- 형식이 모호하면 가장 단순한 해석을 택하고, 그 해석을 형식 안에서 표현합니다.",
+      ].join("\n"),
+    },
+  ];
+  function renderSystemChips() {
+    const box = document.getElementById("chat-system-chips");
+    if (!box || box.dataset.ready) return;
+    box.dataset.ready = "1";
+    box.innerHTML = SYSTEM_PRESETS.map((p, i) =>
+      '<button type="button" class="pchipbtn" data-preset="' + i + '" title="' + esc(p.tip) + '">' +
+      esc(p.label) + "</button>").join("") +
+      '<button type="button" class="pchipbtn ghost" data-preset="clear" title="비우기">비우기</button>';
+    box.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-preset]");
+      if (!b) return;
+      const key = b.getAttribute("data-preset");
+      const ta = $("#chat-system");
+      ta.value = key === "clear" ? "" : (SYSTEM_PRESETS[Number(key)] || {}).text || "";
+      ta.focus();
+      markSystemChips();
+    });
+    markSystemChips();
+  }
+
+  // 지금 입력칸 내용과 같은 칩을 눌린 상태로 표시 — 무엇이 적용됐는지 한눈에 보이게
+  function markSystemChips() {
+    const box = document.getElementById("chat-system-chips");
+    if (!box) return;
+    const cur = ($("#chat-system").value || "").trim();
+    box.querySelectorAll("[data-preset]").forEach((b) => {
+      const key = b.getAttribute("data-preset");
+      const on = key === "clear" ? cur === ""
+        : cur === (((SYSTEM_PRESETS[Number(key)] || {}).text) || "").trim();
+      b.classList.toggle("on", on);
+    });
+  }
 
   // 모델 카드: 이 정보만으로 해당 LLM과 대화 가능한 수준의 상세(endpoint·timeout·상태)
   async function fetchLlmModels() {
@@ -1802,6 +1901,7 @@
       state.chatId = null;
       state.chatDoc = null;
       $("#chat-system").value = DEFAULT_CHAT_SYSTEM;
+      markSystemChips();
       renderChatList();
       renderChatMessages();
     }
@@ -1978,6 +2078,7 @@
       state.chatId = null;
       state.chatDoc = null;
       $("#chat-system").value = DEFAULT_CHAT_SYSTEM;
+      markSystemChips();
       renderChatList();
       renderChatMessages();
       $("#chat-input").focus();
@@ -2013,6 +2114,7 @@
       state.chatId = id;
       $("#chat-system").value = state.chatDoc.system != null && state.chatDoc.system !== ""
         ? state.chatDoc.system : DEFAULT_CHAT_SYSTEM;
+      markSystemChips();
       renderChatList();
       renderChatMessages();
       const mini = document.getElementById("chat-title-mini");
@@ -2027,14 +2129,14 @@
     clearTimeout(state.pendingPollTimer);
     if (!doc || !doc.pending || !state.chatId) {
       // 이 대화의 전송이 끝났으면 상태도 함께 해제 (서버가 단일 진실 원천)
-      if (state.tx && state.tx.chatId === state.chatId && !(doc && doc.pending)) setTx(null);
+      if (getTx(state.chatId) && !(doc && doc.pending)) setTx(null, state.chatId);
       return;
     }
     const p = doc.pending;
     // 서버가 알려준 in-flight 전송을 그대로 상태로 복원 — 새로고침·재접속에도 정지 버튼 유지
     setTx({ kind: p.edit_index != null ? "edit" : "send", chatId: state.chatId,
             editIndex: p.edit_index, startedMs: Date.parse(p.ts) || Date.now(),
-            token: p.token || "" });
+            token: p.token || "" }, state.chatId);
     const box = $("#chat-messages");
     if (!document.getElementById("chat-pending")) {
       if (box.querySelector(".empty")) box.innerHTML = "";
@@ -2428,7 +2530,57 @@
     return out;
   }
 
+  // 헤더 높이를 항상 최신으로 유지한다. 대화 화면 높이가 이 값으로 계산되므로,
+  // 헤더가 나중에 바뀌면(접근 제어의 열쇠·임시 칩이 붙거나 창 폭이 바뀌어 줄바꿈되면)
+  // 값이 낡아 입력창이 화면 밖으로 밀리고 대화를 덮는 것처럼 보인다.
+  function syncHeadHeight() {
+    const h = document.querySelector("header");
+    if (!h) return;
+    const px = h.offsetHeight;
+    if (px && String(px) !== String(state.headh)) {
+      state.headh = px;
+      document.documentElement.style.setProperty("--headh", px + "px");
+      if (typeof autoGrowInput === "function") autoGrowInput();
+    }
+  }
+
+  (function watchHeader() {
+    const h = document.querySelector("header");
+    if (!h) return;
+    if (window.ResizeObserver) new ResizeObserver(syncHeadHeight).observe(h);
+    window.addEventListener("resize", syncHeadHeight);
+    syncHeadHeight();
+  })();
+
+  // 입력창 자동 높이 — 내용만큼 커지되 대화 영역을 침범하지 않게 상한을 둔다.
+  // 상한이 없으면 긴 질문에서 입력창이 대화를 덮는다. 전송 중에도 같은 규칙이 유지된다.
+  function autoGrowInput() {
+    const ta = document.getElementById("chat-input");
+    if (!ta) return;
+    const main = ta.closest(".chatmain") || ta.parentElement;
+    const room = main ? main.getBoundingClientRect().height : 0;
+    // 대화 영역에 최소 180px는 남긴다. 그 안에서만 입력창이 커진다.
+    const max = Math.max(88, Math.min(room ? room - 180 : 240, 320));
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight + 2, max) + "px";
+    ta.style.overflowY = ta.scrollHeight + 2 > max ? "auto" : "hidden";
+    syncBottomSpacer();
+  }
+
+  function resetInputHeight() {
+    const ta = document.getElementById("chat-input");
+    if (!ta) return;
+    ta.style.height = "";
+    ta.style.overflowY = "";
+    syncBottomSpacer();
+  }
+
   function initChatOptbar() {
+    const sysEl = document.getElementById("chat-system");
+    if (sysEl && !sysEl.dataset.chipsWired) {
+      sysEl.dataset.chipsWired = "1";
+      sysEl.addEventListener("input", markSystemChips);   // 직접 고치면 칩 강조도 풀린다
+    }
     const bar = document.getElementById("chat-optbar");
     if (bar && !bar.querySelector("select")) bar.innerHTML = optbarHtml("chat");
     wireOptbar("chat", { model: $("#model").value || state.defaultModel });
@@ -2458,22 +2610,43 @@
   // ---- 전송 상태(tx) 관리 ----------------------------------------------------
   // 단일 진실 원천은 "서버의 in-flight 전송"이다. 로컬 변수만 쓰면 새로고침에서 상태가
   // 사라지므로(정지 버튼이 보내기로 되돌아감), 서버 pending을 읽어 같은 형태로 복원한다.
-  //   state.tx = { kind: "send"|"edit", chatId, editIndex, startedMs, token } | null
+  //   state.txs[chatId] = { kind: "send"|"edit", chatId, editIndex, startedMs, token }
+  // 대화마다 따로 둔다 — 한 대화가 응답을 기다리는 동안 다른 대화에서 바로 보낼 수 있다.
+  // 새 대화(아직 id 없음)는 "" 키를 쓰고, 서버가 id를 알려주면 그 키로 옮긴다.
   // 화면 반영은 renderTxState() 한 곳에서만 한다 — 버튼·상태문구·가드가 항상 같은 상태를 본다.
-  function setTx(tx) {
-    state.tx = tx || null;
+  function txKey(chatId) {
+    return chatId || "";
+  }
+
+  function getTx(chatId) {
+    return (state.txs || {})[txKey(chatId === undefined ? state.chatId : chatId)] || null;
+  }
+
+  function setTx(tx, chatId) {
+    const key = txKey(chatId === undefined ? (tx ? tx.chatId : state.chatId) : chatId);
+    state.txs = state.txs || {};
+    if (tx) state.txs[key] = tx; else delete state.txs[key];
+    renderTxState();
+  }
+
+  // 새 대화의 전송이 끝나 id가 생기면 그 키로 옮긴다 (정지 버튼이 계속 그 대화를 가리키도록)
+  function rekeyTx(fromId, toId) {
+    const a = txKey(fromId), b = txKey(toId);
+    if (a === b || !state.txs || !state.txs[a]) return;
+    state.txs[b] = Object.assign(state.txs[a], { chatId: toId });
+    delete state.txs[a];
     renderTxState();
   }
 
   function txActive() {
-    return !!state.tx;
+    return !!getTx();
   }
 
   function renderTxState() {
-    const tx = state.tx;
-    // 다른 대화의 전송이면 이 화면의 버튼은 평소 상태로 둔다 (화면을 뺏지 않는 규칙과 동일)
-    const here = !!tx && (!tx.chatId || tx.chatId === state.chatId);
-    state.sending = !!tx;        // 기존 가드 호환 (수정·분기 전환 잠금)
+    // 지금 보고 있는 대화의 전송만 이 화면에 반영한다. 다른 대화의 전송은 그대로 진행된다.
+    const tx = getTx();
+    const here = !!tx;
+    state.sending = here;        // 기존 가드 호환 (수정·분기 전환 잠금) — 이 대화 기준
     state.sendToken = tx ? tx.token : null;
     state.sendingChatId = tx ? tx.chatId : null;
     setSendBtnMode($("#chat-send"), here ? "stop" : "send");
@@ -2490,12 +2663,13 @@
   }
 
   async function cancelSend() {
-    if (!state.sending) return;
+    const tx = getTx();
+    if (!tx) return;   // 이 대화에 진행 중인 전송이 없으면 아무것도 하지 않는다
     const btn = $("#chat-send");
     btn.disabled = true;
     try {
       const r = await apiPost("api/chat/cancel",
-        { id: state.sendingChatId || "", token: state.sendToken || "" });
+        { id: tx.chatId || "", token: tx.token || "" });
       toast(r.cancelled ? "Stop requested. The response will not be saved." : "Nothing is being sent");
     } catch (e) {
       toast("Stop failed: " + e.message);
@@ -2518,6 +2692,73 @@
 
   // 메시지 분량 — 글자 수(코드포인트 기준)와 UTF-8 바이트 용량. 보낸·받은 메시지 모두 표시
   // 큰 수를 3자리 단위(k M G T)로 압축 표기 - 가로폭을 아끼기 위해
+  // ---- 크기를 색으로 (소요 시간·토큰) ------------------------------------------
+  // 파랑 한 색상 램프 위를 log 스케일로 "연속" 이동한다. 단계로 끊지 않는다 —
+  // 1초와 3초, 1분과 3분이 서로 다른 색으로 보여야 하기 때문이다.
+  // 임계를 넘으면 상태색(빨강)으로 바꾼다. 숫자는 항상 함께 보이므로 색만으로 뜻을 전달하지 않는다.
+  // 범위는 llm.json의 etc.latency_scale / etc.token_scale에서 온다.
+  const RAMP_LIGHT = ["#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b"];
+  const RAMP_DARK = ["#256abf", "#2a78d6", "#3987e5", "#5598e7", "#6da7ec", "#86b6ef", "#9ec5f4"];
+  const ALARM_LIGHT = "#b42318";
+  const ALARM_DARK = "#f97066";
+
+  function isDark() {
+    try { return window.matchMedia("(prefers-color-scheme: dark)").matches; } catch (e) { return false; }
+  }
+
+  function hex2rgb(h) {
+    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  }
+
+  function rgb2hex(c) {
+    return "#" + c.map((x) => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, "0")).join("");
+  }
+
+  // 램프 위 위치 p(0~1)의 색. 문서화된 단계 사이를 선형 보간하므로 색상과 밝기 순서가 유지된다.
+  function rampAt(p) {
+    const ramp = isDark() ? RAMP_DARK : RAMP_LIGHT;
+    const x = Math.max(0, Math.min(1, p)) * (ramp.length - 1);
+    const i = Math.min(ramp.length - 2, Math.floor(x));
+    const t = x - i;
+    const a = hex2rgb(ramp[i]), b = hex2rgb(ramp[i + 1]);
+    return rgb2hex([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]);
+  }
+
+  // 값 v를 [lo, hi] 구간에 log로 매핑한다. 자릿수가 다른 값들이 고르게 벌어진다.
+  function logPos(v, lo, hi) {
+    const x = Math.max(Number(lo) || 0.001, Number(v) || 0);
+    const a = Math.log(Math.max(0.001, Number(lo) || 0.001));
+    const b = Math.log(Math.max(a + 0.001, Number(hi) || 1));
+    return (Math.log(x) - a) / (b - a);
+  }
+
+  function scaleCfg(name) {
+    const sc = (state.scales || {})[name] || {};
+    return name === "latency"
+      ? { lo: sc.min_s != null ? sc.min_s : 0.5, hi: sc.max_s != null ? sc.max_s : 300,
+          alarm: sc.alarm_s != null ? sc.alarm_s : 300 }
+      : { lo: sc.min != null ? sc.min : 100, hi: sc.max != null ? sc.max : 100000,
+          alarm: sc.alarm != null ? sc.alarm : Infinity };
+  }
+
+  function latencyColor(sec) {
+    const c = scaleCfg("latency");
+    if (sec >= c.alarm) return isDark() ? ALARM_DARK : ALARM_LIGHT;
+    return rampAt(logPos(sec, c.lo, c.hi));
+  }
+
+  function tokenColor(n) {
+    const c = scaleCfg("token");
+    if (n >= c.alarm) return isDark() ? ALARM_DARK : ALARM_LIGHT;
+    return rampAt(logPos(n, c.lo, c.hi));
+  }
+
+  // 숫자에 색을 입힌 조각. 숫자 자체가 라벨이므로 색은 보조 표시일 뿐이다.
+  function scaled(text, color, title) {
+    return '<span class="scaled" style="color:' + color + '"' +
+      (title ? ' title="' + esc(title) + '"' : "") + ">" + esc(text) + "</span>";
+  }
+
   function fmtNum(n) {
     const v = Number(n) || 0;
     const units = [["T", 1e12], ["G", 1e9], ["M", 1e6], ["k", 1e3]];
@@ -2580,9 +2821,15 @@
       const parts = [esc(ts), esc(sizeMeta(m.content))];
       // 모델명은 말풍선 위 발신자 표시와 겹치므로 다를 때만 캡션에 남긴다
       if (m.model && m.model !== senderLabel(m)) parts.push(esc(m.model));
-      if (m.latency_ms) parts.push((m.latency_ms / 1000).toFixed(1) + "s");
+      if (m.latency_ms) {
+        const sec = m.latency_ms / 1000;
+        parts.push(scaled(sec.toFixed(1) + "s", latencyColor(sec), "response in " + sec.toFixed(1) + "s"));
+      }
       if (u.prompt_tokens || u.completion_tokens) {
-        parts.push("in " + fmtNum(u.prompt_tokens || 0) + " / out " + fmtNum(u.completion_tokens || 0) + " tok");
+        const tot = (u.prompt_tokens || 0) + (u.completion_tokens || 0);
+        parts.push("in " + fmtNum(u.prompt_tokens || 0) + " / out " +
+                   scaled(fmtNum(u.completion_tokens || 0), tokenColor(tot),
+                          "this reply " + tot.toLocaleString() + " tok") + " tok");
       }
       cap = parts.map((t) => '<span class="capi">' + t + "</span>").join("") + editedMark +
         '<span class="mtoggleslot"></span>' +
@@ -3081,12 +3328,14 @@
   async function sendChat() {
     const input = $("#chat-input");
     const msg = input.value.trim();
-    if (!msg || state.sending) return;
+    if (!msg || getTx()) return;   // 이 대화가 이미 응답을 기다리는 중이면 무시
     const opts = readOptbar("chat");
     state.userScrolled = false; // 내가 보낸 메시지는 보여야 하므로 따라가기 모드로 복귀
     const token = "SEND-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8);
-    setTx({ kind: "send", chatId: state.chatId || "", startedMs: Date.now(), token: token });
+    setTx({ kind: "send", chatId: state.chatId || "", startedMs: Date.now(), token: token },
+          state.chatId || "");
     input.value = "";
+    resetInputHeight();
     const box = $("#chat-messages");
     if (!((state.chatDoc && state.chatDoc.messages) || []).length) box.innerHTML = "";
     // 질문과 대기 표시를 한 줄로 — 아랫변을 맞춰 대화와 같은 쪽에 정렬
@@ -3110,6 +3359,8 @@
         catch (err) { /* 소속 지정 실패는 대화 자체를 막지 않는다 */ }
         state.pendingProject = null;
       }
+      rekeyTx(sentChatId || "", r.id);   // 새 대화였다면 "" -> 새 id
+      _lastChatId = r.id || "";
       const stillViewing = state.chatId === sentChatId; // 새 대화(null)였다면 여전히 null인지
       if (stillViewing) {
         state.scrollAnchor = "last-user"; // 답변 도착 후에도 질문을 상단에 유지
@@ -3121,20 +3372,28 @@
         const p = document.getElementById("chat-pending");
         if (p) (p.closest(".pendrow") || p).remove(); // 질문+대기 표시 한 줄 통째로 제거
         input.value = msg; // 실패 시 입력 복원 (서버도 user 메시지를 저장하지 않음)
+        autoGrowInput();
       }
       toast(e.code === "E-1022" ? "Stopped. The response was not saved."
         : "Send failed: " + (e.code ? "(" + e.code + ") " : "") + e.message);
     } finally {
-      setTx(null);
+      setTx(null, sentChatId || "");
+      setTx(null, lastChatId());   // 새 대화였다면 새로 받은 id 쪽도 함께 해제
       input.focus();
     }
   }
 
-  $("#chat-send").addEventListener("click", () => { if (state.sending) cancelSend(); else sendChat(); });
+  // sendChat이 마지막으로 다룬 대화 id (새 대화는 전송 뒤에야 id가 생긴다)
+  let _lastChatId = "";
+  function lastChatId() { return _lastChatId; }
+
+  $("#chat-send").addEventListener("click", () => { if (getTx()) cancelSend(); else sendChat(); });
   renderTxState(); // 초기 아이콘(보내기) 렌더
   $("#chat-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) sendChat();
   });
+  $("#chat-input").addEventListener("input", autoGrowInput);
+  window.addEventListener("resize", autoGrowInput);
   $("#chat-new").addEventListener("click", () => {
     closeProjectHome();
     setSidebar(false);
@@ -3142,6 +3401,7 @@
     state.chatId = null;
     state.chatDoc = null;
     $("#chat-system").value = DEFAULT_CHAT_SYSTEM;
+      markSystemChips();
     renderChatList();
     renderChatMessages();
     pushRoute(); // 목록(새 대화) 상태도 history entry — 뒤로가기로 이전 대화 복귀
@@ -3362,7 +3622,7 @@
       return;
     }
     if (e.target.closest("#edit-msg-send")) {
-      if (state.sending) cancelSend(); else sendEdit();
+      if (getTx()) cancelSend(); else sendEdit();
       return;
     }
     if (e.target.closest("#ctx-edit-cancel")) {
@@ -3387,11 +3647,12 @@
     if (i == null || !ta) return;
     const content = ta.value.trim();
     if (!content) { toast("Content is empty"); return; }
-    if (state.sending) return;
+    if (getTx()) return;
     const opts = readOptbar("edit");
     const token = "EDIT-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8);
     setTx({ kind: "edit", chatId: state.chatId || "", editIndex: i, startedMs: Date.now(), token: token });
-    const restoreEditBtn = () => setTx(null);
+    const editChatId = state.chatId || "";
+    const restoreEditBtn = () => setTx(null, editChatId);
     const sentChatId = state.chatId;
     try {
       const r = await apiPost("api/chat/edit", Object.assign({
@@ -3410,7 +3671,7 @@
         : "Edit resend failed: " + (e.code ? "(" + e.code + ") " : "") + e.message);
       restoreEditBtn();
     } finally {
-      setTx(null);
+      setTx(null, editChatId);
     }
   }
 
@@ -3761,7 +4022,10 @@
     state.tick += 1;
     document.querySelectorAll("[data-timer]").forEach((el) => {
       const start = Number(el.getAttribute("data-start") || 0);
-      if (start) el.textContent = Math.max(0, Math.round((Date.now() - start) / 1000)) + "초";
+      if (!start) return;
+      const sec = elapsedSec(start);
+      el.textContent = sec + "s";
+      el.style.color = latencyColor(sec);   // 기다리는 동안에도 색이 진해진다
     });
     // 주기는 설정에서 온다 (llm.json의 poll_seconds, sso.json의 etc.poll_seconds)
     if (state.tick % (state.llmPoll || 30) === 0) refreshLlmStatus();

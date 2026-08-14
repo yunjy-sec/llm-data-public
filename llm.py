@@ -34,6 +34,7 @@
   lenient 파서만으로 동작하는 것이 기본이다. 지원이 확인된 LLM에서만 켠다.
 """
 
+import log as _log_mod
 import http.client
 import json
 import os
@@ -178,6 +179,29 @@ def req_timeout(cfg):
         return 300
 
 
+# 화면에서 소요 시간·토큰 크기를 색으로 보일 때 쓰는 범위. 설정에서 덮어쓸 수 있다.
+DEFAULT_SCALES = {
+    "latency": {"min_s": 0.5, "max_s": 300, "alarm_s": 300},
+    "token": {"min": 100, "max": 100000},
+}
+
+
+def scales(cfg=None):
+    """색상 스케일 범위. llm.json의 etc.latency_scale / etc.token_scale로 덮어쓴다.
+    값은 log로 매핑되므로 min은 0보다 커야 한다."""
+    cfg = resolve(cfg if cfg is not None else load_config())
+    out = {k: dict(v) for k, v in DEFAULT_SCALES.items()}
+    for key, name in (("latency", "latency_scale"), ("token", "token_scale")):
+        got = opt(cfg, name)
+        if isinstance(got, dict):
+            for k, v in got.items():
+                try:
+                    out[key][str(k)] = float(v)
+                except (TypeError, ValueError):
+                    continue
+    return out
+
+
 def poll_seconds(cfg=None):
     """화면이 상태를 다시 물어보는 주기(초). config의 poll_seconds, 기본 30.
     프로필 구성이면 etc에 넣어도 읽는다."""
@@ -199,7 +223,8 @@ def probe_timeout(cfg):
 
 EDITABLE_KEYS = ("base_url", "url", "model", "headers", "api_key_env", "timeout", "response_schema",
                  "extra_payload", "model_options", "models", "header_map", "probe_timeout",
-                 "header", "body", "body_by_model", "etc", "poll_seconds")
+                 "header", "body", "body_by_model", "etc", "poll_seconds",
+                 "latency_scale", "token_scale")
 
 # 모델별 추가 설정(요청 payload에 실리는 옵션). 해당 모델이 지원하지 않으면 목록이 비고,
 # 프론트는 그 드롭다운을 비활성 상태로 둔다. config의 "model_options"로 덮어쓸 수 있다.
@@ -718,8 +743,8 @@ def chat_messages(messages, schema=None, cfg=None, tag="CHAT", meta_out=None, ke
             "payload": payload,              # 실제 전송 body 전문
         })
     timeout = req_timeout(cfg)
-    print("[LLM] -> %s POST %s | body %d bytes | response_format=%s | timeout=%ds"
-          % (tag, url, len(body), "YES" if "response_format" in payload else "no", timeout))
+    _log_mod.log("LLM", "-> %s POST %s | body %d bytes | response_format=%s | timeout=%ds"
+                  % (tag, url, len(body), "YES" if "response_format" in payload else "no", timeout))
     started = time.time()
     try:
         res = _http("POST", url, cfg, data=body, timeout=timeout,
@@ -728,7 +753,7 @@ def chat_messages(messages, schema=None, cfg=None, tag="CHAT", meta_out=None, ke
         raise
     except Exception as e:
         elapsed = time.time() - started
-        print("[LLM] [X] %s 실패 | %.1fs | %s | %s: %s" % (tag, elapsed, url, type(e).__name__, e))
+        _log_mod.log("LLM", "[X] %s 실패 | %.1fs | %s | %s: %s" % (tag, elapsed, url, type(e).__name__, e))
         raise LLMError("E-2001", "LLM 전송 실패(%.0fs 경과, %s): %s" % (elapsed, type(e).__name__, e))
     if res.status >= 400:
         detail = ""
@@ -740,7 +765,7 @@ def chat_messages(messages, schema=None, cfg=None, tag="CHAT", meta_out=None, ke
         except Exception:
             detail = res.body.decode("utf-8", "replace")[:220]
         elapsed = time.time() - started
-        print("[LLM] [X] %s 실패 | %.1fs | HTTP %s %s | %s" % (tag, elapsed, res.status, err_type, detail))
+        _log_mod.log("LLM", "[X] %s 실패 | %.1fs | HTTP %s %s | %s" % (tag, elapsed, res.status, err_type, detail))
         if res.status == 401 or err_type == "auth_expired":
             raise LLMError("E-2007", "LLM 인증 만료/실패: %s" % (detail or res.status))
         http = res.status if 400 <= res.status <= 599 else 502
@@ -759,7 +784,7 @@ def chat_messages(messages, schema=None, cfg=None, tag="CHAT", meta_out=None, ke
     if isinstance(meta_out, dict):
         meta_out["response_envelope"] = resp   # 응답 전문 (chat.completion envelope)
         meta_out["response_bytes"] = len(raw)
-    print("[LLM] <- %s HTTP 200 | %.2fs | %d bytes" % (tag, latency_ms / 1000.0, len(raw)))
+    _log_mod.log("LLM", "<- %s HTTP 200 | %.2fs | %d bytes" % (tag, latency_ms / 1000.0, len(raw)))
     if not isinstance(content, str) or not content.strip():
         raise LLMError("E-2002", "LLM 응답 content 비어 있음")
     return content, usage, latency_ms

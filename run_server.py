@@ -28,6 +28,8 @@ import json
 import os
 import sys
 
+import log as _log_mod
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.environ.get("LLM_DATA_SERVER_CONFIG") or os.path.join(ROOT, "config", "server.json")
 
@@ -54,7 +56,7 @@ def load_config():
     except OSError:
         return {}
     except ValueError as e:
-        print("[run] %s 를 읽지 못했습니다 (JSON 오류): %s" % (CONFIG_PATH, e), file=sys.stderr)
+        _log_mod.log("run", "%s 를 읽지 못했습니다 (JSON 오류): %s" % (CONFIG_PATH, e))
         return {}
 
 
@@ -87,17 +89,17 @@ def main():
     try:
         port = int(pick(args.port, "LLM_DATA_PORT", cfg, "port", DEFAULT_PORT))
     except (TypeError, ValueError):
-        print("[run] port 값이 숫자가 아닙니다. 기본값 %d로 띄웁니다." % DEFAULT_PORT, file=sys.stderr)
+        _log_mod.log("run", "port 값이 숫자가 아닙니다. 기본값 %d로 띄웁니다." % DEFAULT_PORT)
         port = DEFAULT_PORT
 
     if not os.environ.get("LLM_DATA_PERSIST") or not os.environ.get("LLM_DATA_RUNTIME"):
         # 운영에서 이게 비면 데이터가 코드 디렉터리 아래에 쌓인다 — DEPLOY.md 참고
-        print("[run] LLM_DATA_PERSIST / LLM_DATA_RUNTIME 미설정 — 데이터를 <repo>/data 아래에 둡니다 "
-              "(로컬 개발 전용). config/server.json의 persist·runtime으로 지정할 수 있습니다.")
+        _log_mod.log("run", "LLM_DATA_PERSIST / LLM_DATA_RUNTIME 미설정 — 데이터를 <repo>/data 아래에 "
+                     "둡니다 (로컬 개발 전용). config/server.json의 persist·runtime으로 지정할 수 있습니다.")
 
     # 리다이렉트해도 바로 보이도록 여기서 한 줄 남긴다 (server.py의 print는 버퍼링된다)
-    print("[run] http://%s:%d 로 띄웁니다 (설정 %s)"
-          % (host, port, CONFIG_PATH if os.path.exists(CONFIG_PATH) else "없음 — 기본값"), flush=True)
+    _log_mod.log("run", "http://%s:%d 로 띄웁니다 (설정 %s)"
+                 % (host, port, CONFIG_PATH if os.path.exists(CONFIG_PATH) else "없음 — 기본값"))
     sys.argv = [sys.argv[0], "--host", host, "--port", str(port)]
     import server  # 환경변수를 다 채운 뒤에 import해야 저장 경로 상수가 그 값으로 잡힌다
     server.main()

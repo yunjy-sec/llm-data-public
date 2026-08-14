@@ -3,6 +3,7 @@
 python server.py --host 127.0.0.1 --port 8821
 """
 
+import log as _log_mod
 import argparse
 import json
 import os
@@ -213,7 +214,7 @@ def safe_update(job_id, **fields):
             if attempt == 0:
                 time.sleep(0.3)
             else:
-                print("[llm-data] [X] job %s 상태 기록 실패: %s: %s" % (job_id, type(e).__name__, e))
+                _log_mod.log("llm-data", "[X] job %s 상태 기록 실패: %s: %s" % (job_id, type(e).__name__, e))
     return None
 
 
@@ -551,6 +552,46 @@ ACCESS_OPEN_PATHS = {
 }
 
 
+def caller_ip(handler):
+    """실제 호출자 IP. 프록시 뒤에서는 X-Forwarded-For의 첫 주소가 원래 클라이언트다."""
+    fwd = (handler.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    if fwd:
+        return fwd
+    real = (handler.headers.get("X-Real-IP") or "").strip()
+    if real:
+        return real
+    try:
+        return handler.client_address[0]
+    except Exception:
+        return "?"
+
+
+def caller_who(handler):
+    """누가 부른 요청인지 한 줄로. SSO 신원 > 임시 통행증 > guest 순으로 표시한다."""
+    try:
+        who = sso.identity_from(handler.headers)
+    except Exception:
+        who = None
+    if who and who.get("id"):
+        name = who.get("name") or ""
+        dept = who.get("dept") or ""
+        tail = (" " + name if name else "") + (" " + dept if dept else "")
+        return "%s%s" % (who["id"], tail)
+    try:
+        tid = access.check_token(access.token_from(handler.headers))
+    except Exception:
+        tid = None
+    if tid:
+        return "임시:%s" % tid
+    hdr = (handler.headers.get("X-SSO-User") or "").strip()
+    return hdr if hdr else "guest"
+
+
+def caller(handler):
+    """로그 앞에 붙이는 호출자 표시 — IP와 로그인 정보."""
+    return "%s %s" % (caller_ip(handler), caller_who(handler))
+
+
 def access_decision(handler):
     """이 요청을 들여보낼지. access 설정이 없으면 아무도 막지 않는다(fail-open)."""
     try:
@@ -562,9 +603,11 @@ def access_decision(handler):
             who = {}
         tok = access.token_from(handler.headers)
         d = access.decide({"id": who.get("id"), "dept": who.get("dept")}, tok)
+        if not d.get("allowed"):
+            _log_mod.log("ACCESS", "차단 %s -> %s" % (caller(handler), urlparse(handler.path).path))
         return None if d.get("allowed") else d
     except Exception as e:  # 판단이 깨져도 서비스가 멈추면 안 된다
-        print("[ACCESS] 판단 실패, 통과시킵니다: %s" % e, flush=True)
+        _log_mod.log("ACCESS", "판단 실패, 통과시킵니다: %s" % e)
         return None
 
 
@@ -789,7 +832,7 @@ def worker_loop():
         try:
             run_convert_job(job_id)
         except Exception as e:
-            print("[llm-data] [X] worker 예외: %s: %s" % (type(e).__name__, e))
+            _log_mod.log("llm-data", "[X] worker 예외: %s: %s" % (type(e).__name__, e))
             safe_update(job_id, state="error", finished_at=now_iso(),
                         error={"code": "E-5000", "message": "worker 예외: %s" % e})
         finally:
@@ -1084,6 +1127,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/models":
                 cfg = llm.load_config()
                 return self._json({"models": list(llm.allowed_models(cfg)), "default": llm.current_model(cfg),
+                                   "scales": llm.scales(cfg),
                                    "options": llm.model_options(cfg)})
             if path == "/api/jobs":
                 q = parse_qs(u.query)
@@ -1176,7 +1220,11 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._body() or {}
                 tok = access.temp_login(body.get("id"), body.get("pw"))
                 if not tok:
+                    _log_mod.log("ACCESS", "임시 접속 실패 %s id=%s"
+                                 % (caller(self), str(body.get("id") or "")))
                     return self._error(401, "임시 id 또는 pw가 맞지 않습니다", "E-1008")
+                _log_mod.log("ACCESS", "임시 접속 %s -> %s"
+                             % (caller(self), str(body.get("id") or "")))
                 # 쿠키로도 심는다. 페이지 이동에는 헤더를 붙일 수 없어 쿠키가 없으면
                 # 서버는 차단하고 화면은 통과로 판단해 무한 새로고침이 된다.
                 return self._json({"token": tok}, extra_headers=[("Set-Cookie", access.cookie_header(tok))])
@@ -1207,6 +1255,10 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._json({"id": "guest", "source": "none", "service": "down",
                                        "error": "%s: %s" % (type(e).__name__, e)})
+                if out.get("source") == "sso":
+                    _log_mod.log("SSO", "로그인 %s -> %s %s %s"
+                            % (caller_ip(self), out.get("id"), out.get("name") or "",
+                               out.get("dept") or ""))
                 # 확인된 신원을 서명해 쿠키로 심는다. 1단계는 브라우저만 할 수 있어서
                 # 서버가 페이지 요청마다 다시 확인할 방법이 없다.
                 return self._json(out, extra_headers=[("Set-Cookie", sso.identity_cookie(out))])
@@ -1453,8 +1505,9 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         try:
                             got, stopped = call_cancellable(chat["id"], lambda: llm.chat_messages(
-                                llm_messages, cfg=cfg, tag=chat["id"], meta_out=req_meta,
-                                key=chat["id"]))
+                                llm_messages, cfg=cfg,
+                                tag="%s | %s" % (chat["id"], caller(self)),
+                                meta_out=req_meta, key=chat["id"]))
                             if stopped:
                                 return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
                             content, usage, latency_ms = got
@@ -1518,7 +1571,9 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         try:
                             got, stopped = call_cancellable(cid, lambda: llm.chat_messages(
-                                llm_messages, cfg=cfg, tag=cid, meta_out=req_meta, key=cid))
+                                llm_messages, cfg=cfg,
+                                tag="%s | %s" % (cid, caller(self)),
+                                meta_out=req_meta, key=cid))
                             if stopped:
                                 return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
                             content, usage, latency_ms = got
@@ -2030,9 +2085,9 @@ def main():
     try:
         access.log_status()   # 접근 제어가 켜졌는지 기동 로그에서 바로 보이게
     except Exception as e:
-        print("[ACCESS] 상태 확인 실패: %s" % e, flush=True)
+        _log_mod.log("ACCESS", "상태 확인 실패: %s" % e)
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
-    print("[llm-data] http://%s:%d (LLM: %s)" % (args.host, args.port, llm.status().get("url")))
+    _log_mod.log("llm-data", "http://%s:%d (LLM: %s)" % (args.host, args.port, llm.status().get("url")))
     httpd.serve_forever()
 
 

@@ -164,7 +164,9 @@
         </details>
         <details id="chat-system-box" class="artifact" data-art="chat-system">
           <summary>system prompt</summary>
-          <textarea id="chat-system" spellcheck="false" placeholder="System prompt for this chat, sent with every message"></textarea>
+          <!-- 자주 쓰는 지시를 한 번에 채우는 칩. 그대로 쓰거나 고쳐 쓰면 된다 -->
+          <div class="promptchips" id="chat-system-chips"></div>
+          <textarea id="chat-system" spellcheck="false" placeholder="System prompt for this chat, sent with every message. Leave empty to send none."></textarea>
         </details>
         <details id="chat-request-box" class="artifact" data-art="chat-request">
           <summary>request</summary>

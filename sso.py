@@ -45,6 +45,7 @@ id를 실제로 가져오면 초록 LED와 함께 id 이름 부서가 표시된�
 자격 정보가 담긴 헤더(Cookie·Authorization 등)는 로그에서 값 대신 길이만 표시된다.
 """
 
+import log as _log_mod
 import base64
 import hashlib
 import hmac
@@ -87,11 +88,8 @@ _HEALTH = [0.0, None]  # [만료시각, service]
 
 
 def _log(msg):
-    """터미널(서버 stdout) 로그. llm.py의 [LLM] 로그와 같은 자리에서 보인다."""
-    try:
-        print("[SSO] %s" % msg, flush=True)
-    except Exception:
-        pass
+    """터미널 로그. 앞에 yyyymmdd hhmmss 가 붙는다."""
+    _log_mod.log("SSO", msg)
 
 
 def load_config():

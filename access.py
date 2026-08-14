@@ -29,6 +29,7 @@ id/pw로 들어오는 요청은 무조건 파일을 다시 읽으므로, 자격�
 서버는 차단하고 화면은 통과로 판단해 무한 새로고침이 된다.
 """
 
+import log as _log_mod
 import base64
 import hashlib
 import hmac
@@ -57,11 +58,8 @@ _CFG = {"stamp": None, "cfg": {}}  # 파일이 바뀌면 stamp가 달라져 자�
 
 
 def _log(msg):
-    """오류만 남긴다. 정상 흐름은 조용히 지나간다."""
-    try:
-        print("[ACCESS] %s" % msg, flush=True)
-    except Exception:
-        pass
+    """오류만 남긴다. 정상 흐름은 조용히 지나간다. 앞에 yyyymmdd hhmmss 가 붙는다."""
+    _log_mod.log("ACCESS", msg)
 
 
 def load_config(force=False):
@@ -243,8 +241,7 @@ def temp_login(tid, pw, cfg=None):
             continue
         if str(row.get("id") or "").strip() == tid and hmac.compare_digest(str(row.get("pw") or ""), pw):
             return issue_token(tid, cfg)
-    _log("임시 접속 실패 id=%s" % (tid or "(빈 값)"))
-    return None
+    return None   # 실패 로그는 호출부가 IP와 함께 남긴다
 
 
 # ---- 판단 ---------------------------------------------------------------------
@@ -296,8 +293,8 @@ def decide(user, token=None, cfg=None):
         # 임시 접속은 통행증일 뿐이다. 화면의 사용자 표시는 SSO 결과를 그대로 둔다.
         return {"allowed": True, "admin": admin, "via": "temp", "temp_id": tid, "enabled": True}
 
+    # 로그는 호출부가 남긴다 — 이 모듈은 IP를 모른다 (server.py가 IP와 함께 찍는다)
     uid = str((user or {}).get("id") or "").strip()
-    _log("차단 id=%s dept=%s" % (uid or "(없음)", (user or {}).get("dept") or "(없음)"))
     return {"allowed": False, "admin": False, "via": None, "enabled": True,
             "reason": "허가되지 않은 사용자입니다",
             "checked": {"id": uid, "dept": str((user or {}).get("dept") or "")}}
