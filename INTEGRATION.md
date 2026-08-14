@@ -281,7 +281,9 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
   브라우저 콘솔의 `[sso] local agent` 줄에 `message`로 찍히므로 그걸 보고 맞춘다.
 - `verify.body` — 실을 key와 value를 그대로 적는다. 값의 `{이름}`이 1단계 값으로 치환되고,
   `{"json": {...}}`로 감싸면 그 안을 채운 뒤 **JSON 문자열**로 만든다.
-- `verify.response` — 응답에서 id·이름·부서를 꺼낼 경로.
+- `verify.response` — 응답에서 id·이름·부서를 꺼낼 경로. 여기서도 중간 값이 JSON 문자열이면
+  자동으로 객체로 바꾸고 계속 내려간다. `{"result":"success","data":"{…}"}` 처럼
+  `data`가 문자열로 와도 `data.EP_LOGINID`로 적으면 된다.
 - **`ws://localhost`는 그대로 둔다.** 사용자 PC의 에이전트라서 브라우저가 붙어야 한다.
   8000 포트만 실제 호스트 주소로 바꾼다.
 - `verify.url` — 적은 호스트로 그대로 나간다. 경로를 빼고 호스트만 적으면 `/api/verify_sso`를 붙인다.
