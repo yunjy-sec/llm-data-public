@@ -193,7 +193,7 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
 {
   "api_base_url": "https://apigw.example.com/llm/v1",
   "model": "gpt-oss-120b",
-  "models": ["gpt-oss-120b", "gpt-oss-20b"],
+  "models": ["gpt-oss-120b"],
   "timeout": 900,
   "headers": { "User-Type": "AD_ID" },
   "credential_key": "credential:TICKET-...",
