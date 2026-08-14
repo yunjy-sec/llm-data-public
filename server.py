@@ -1076,8 +1076,11 @@ class Handler(BaseHTTPRequestHandler):
                 # 1단계에서 브라우저가 받은 토큰으로 2단계(verify_sso) 확인.
                 # 실패해도 guest를 돌려줄 뿐 다른 기능에 영향이 없다.
                 body = self._body() or {}
+                vals = body.get("values")
+                if not isinstance(vals, dict):
+                    vals = {"token": body.get("token")} if body.get("token") else {}
                 try:
-                    return self._json(sso.whoami(self.headers, body.get("token")))
+                    return self._json(sso.whoami(self.headers, vals))
                 except Exception as e:
                     return self._json({"id": "guest", "source": "none", "service": "down",
                                        "error": "%s: %s" % (type(e).__name__, e)})

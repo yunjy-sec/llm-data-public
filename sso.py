@@ -13,7 +13,8 @@ llm.json과 같은 방식이다. 주고받는 key와 value를 설정에 모두 �
     - url:       ws://localhost:<포트>/<경로>
     - request:   에이전트로 보낼 메시지. 객체면 JSON으로, 문자열이면 그대로 보낸다.
                  비우면 보내지 않고 받기만 한다.
-    - response:  받은 메시지에서 값을 꺼낼 경로. {"token": "data.token"} 처럼 적는다.
+    - response:  받은 메시지에서 값을 꺼낼 경로를 이름마다 적는다.
+                 예: {"userInfo": "userInfo", "key": "key"}
                  경로 대신 ""를 적으면 받은 메시지 전체를 그 값으로 쓴다.
     - etc:       timeout(초, 기본 3) 등. 전송되지 않는다.
 
@@ -22,7 +23,9 @@ llm.json과 같은 방식이다. 주고받는 key와 value를 설정에 모두 �
                  localhost가 아니라 적은 호스트로 그대로 나간다.
                  경로를 빼고 호스트만 적으면 /api/verify_sso를 붙인다.
     - header:    요청 헤더. 적은 이름과 값 그대로 전송된다(대소문자 보존).
-    - body:      요청 본문. 값에 "{token}"을 쓰면 1단계에서 받은 토큰으로 치환된다.
+    - body:      요청 본문. 값에 "{이름}"을 쓰면 1단계에서 받은 그 값으로 치환된다.
+                 {"json": {...}} 로 감싸면 그 안을 채운 뒤 JSON 문자열로 만든다
+                 (token 안에 JSON 문자열을 넣어야 하는 규약용).
     - response:  응답에서 값을 꺼낼 경로. {"id": ..., "name": ..., "dept": ...}
     - etc:       method(기본 POST) timeout forward_headers 등. 전송되지 않는다.
 
@@ -136,7 +139,7 @@ def public_config(cfg=None):
         "local": {
             "url": str(local.get("url") or "").strip(),
             "request": local.get("request"),
-            "response": local.get("response") or {"token": ""},
+            "response": local.get("response") or {},
             "timeout": _num(_etc(local, "timeout", 3), 3),
         },
     }
@@ -177,39 +180,55 @@ def _headers(verify, incoming):
     return out
 
 
-def _fill(value, token):
-    """설정 값의 {token} 자리를 1단계 토큰으로 치환한다."""
+def _fill(value, values):
+    """설정 값의 {이름} 자리를 1단계에서 받은 값으로 치환한다.
+    {"json": {...}} 로 감싸면 그 안을 채운 뒤 JSON 문자열로 만든다
+    (token 안에 JSON 문자열을 넣어야 하는 규약용)."""
     if isinstance(value, str):
-        return value.replace("{token}", "" if token is None else str(token))
+        out = value
+        for k, v in (values or {}).items():
+            out = out.replace("{%s}" % k, "" if v is None else str(v))
+        return out
     if isinstance(value, dict):
-        return {k: _fill(v, token) for k, v in value.items() if str(k) != "disabled"}
+        if list(value.keys()) == ["json"]:
+            return json.dumps(_fill(value["json"], values), ensure_ascii=False)
+        return {k: _fill(v, values) for k, v in value.items() if str(k) != "disabled"}
     if isinstance(value, list):
-        return [_fill(v, token) for v in value]
+        return [_fill(v, values) for v in value]
     return value
 
 
-def _body(verify, token):
-    """2단계 요청 본문. 설정의 body를 그대로 쓰되 {token}을 치환한다."""
+def _body(verify, values):
+    """2단계 요청 본문. 설정의 body를 그대로 쓰되 {이름} 자리를 치환한다."""
     b = verify.get("body")
     if not isinstance(b, dict):
         b = {}
-    out = _fill(b, token)
-    # body에 {token} 자리를 안 적었는데 토큰이 있으면 그대로 흘려보내지 않는다 — 로그로 알린다
-    if token and "{token}" not in json.dumps(b, ensure_ascii=False):
-        _log("주의: verify.body에 \"{token}\" 자리가 없어 1단계 토큰이 실리지 않는다")
-    return out
+    raw = json.dumps(b, ensure_ascii=False)
+    missing = [k for k in (values or {}) if ("{%s}" % k) not in raw]
+    if missing:
+        _log("주의: verify.body에 %s 자리가 없어 1단계 값이 실리지 않는다"
+             % ", ".join("{%s}" % m for m in missing))
+    return _fill(b, values)
 
 
-def _session_key(headers, token):
-    raw = "|".join("%s=%s" % (k, headers[k]) for k in sorted(headers)) + "|" + str(token or "")
+def _session_key(headers, values):
+    raw = ("|".join("%s=%s" % (k, headers[k]) for k in sorted(headers)) + "|"
+           + json.dumps(values or {}, sort_keys=True, ensure_ascii=False))
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:32]
 
 
 def _pick(obj, path):
-    """점으로 이어진 경로로 값 꺼내기. 경로가 ""면 obj 자체를 값으로 본다."""
+    """점으로 이어진 경로로 값 꺼내기. 경로가 ""면 obj 자체를 값으로 본다.
+    내려가는 도중 값이 JSON 문자열이면 한 번 파싱하고 계속 내려간다
+    (KnoxTray의 raw.data처럼 문자열 안에 JSON이 들어 있는 응답용)."""
     cur = obj
     if str(path) != "":
         for part in str(path).split("."):
+            if isinstance(cur, str):
+                try:
+                    cur = json.loads(cur)
+                except ValueError:
+                    return None
             if isinstance(cur, list):
                 try:
                     cur = cur[int(part)]
@@ -263,7 +282,7 @@ def _request(verify, url, headers, body, timeout, method):
         conn.close()
 
 
-def whoami(incoming_headers=None, token=None):
+def whoami(incoming_headers=None, values=None):
     """로그인 확인. 어떤 실패에서도 예외를 던지지 않고 guest를 돌려준다.
 
     반환: {"id", "name", "dept", "source", "service", "status", "error", "response"}
@@ -276,21 +295,26 @@ def whoami(incoming_headers=None, token=None):
         return {"id": GUEST, "source": "none", "service": "unconfigured"}
     verify = _sec(cfg, "verify") or cfg
 
+    if isinstance(values, str):
+        values = {"token": values}   # 값 하나만 넘어온 옛 호출부 호환
+    values = values if isinstance(values, dict) else {}
+
     headers = _headers(verify, incoming_headers)
-    key = _session_key(headers, token)
+    key = _session_key(headers, values)
     now = time.time()
     with _LOCK:
         hit = _CACHE.get(key)
         if hit and hit[0] > now:
             return dict(hit[1])
 
-    body = _body(verify, token)
+    body = _body(verify, values)
     method = str(_etc(verify, "method", DEFAULT_METHOD)).upper()
     timeout = _num(_etc(verify, "timeout", 3), 3)
     result = {"id": GUEST, "source": "none", "service": "down", "url": url}
 
-    _log("확인 시작 %s | token %s | 헤더 %s | body %s" % (
-        url, "있음(%d자)" % len(str(token)) if token else "없음",
+    _log("확인 시작 %s | 1단계 값 %s | 헤더 %s | body %s" % (
+        url,
+        ", ".join("%s(%d자)" % (k, len(str(v))) for k, v in sorted(values.items())) or "없음",
         ", ".join("%s=%s" % (k, _mask(k, v)) for k, v in sorted(headers.items())),
         _preview({k: _mask(k, v) for k, v in body.items()}, 200)))
     try:

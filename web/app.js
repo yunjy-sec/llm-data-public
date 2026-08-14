@@ -3638,9 +3638,15 @@
         clearTimeout(timer);
         let doc = ev.data;
         try { doc = JSON.parse(ev.data); } catch (e) { /* 문자열 그대로 쓴다 */ }
-        const path = ((local.response || {}).token) || "";
-        const token = pickPath(doc, path);
-        finish(token ? { token: token, raw: doc } : { error: "no token at \"" + path + "\"", raw: doc });
+        // 설정의 response에 적힌 이름마다 경로로 값을 꺼낸다 (예: userInfo, key)
+        const map = local.response || {};
+        const values = {}, missing = [];
+        Object.keys(map).forEach((name) => {
+          const v = pickPath(doc, map[name]);
+          if (v) values[name] = v; else missing.push(name + ' at "' + map[name] + '"');
+        });
+        finish(missing.length ? { error: "missing " + missing.join(", "), raw: doc, values: values }
+          : { values: values, raw: doc });
       };
       ws.onerror = () => { clearTimeout(timer); finish({ error: "websocket error " + url }); };
       ws.onclose = (ev) => {
@@ -3650,11 +3656,16 @@
   }
 
   // 점으로 이어진 경로로 값 꺼내기 (경로가 ""면 값 자체). 서버의 _pick과 같은 규칙이다.
+  // 내려가는 도중 값이 JSON 문자열이면 한 번 파싱하고 계속 내려간다
+  // (KnoxTray의 raw.data처럼 문자열 안에 JSON이 들어 있는 응답용).
   function pickPath(obj, path) {
     let cur = obj;
     if (String(path) !== "") {
       for (const part of String(path).split(".")) {
         if (cur === null || cur === undefined) return null;
+        if (typeof cur === "string") {
+          try { cur = JSON.parse(cur); } catch (e) { return null; }
+        }
         cur = cur[Array.isArray(cur) ? Number(part) : part];
       }
     }
@@ -3668,11 +3679,11 @@
       if (!cfg.configured) return null;               // 설정 없음 — SSO를 시도하지 않는다
       if (!(cfg.local || {}).url) return null;        // 1단계 없음 — 쿠키만으로 확인하는 구성
       const got = await ssoLocalToken(cfg.local);
-      if (!got || !got.token) {
-        console.log("[sso] no token from local agent, staying as guest", got);
+      if (!got || !got.values || !Object.keys(got.values).length) {
+        console.log("[sso] no values from local agent, staying as guest", got);
         return null;
       }
-      return await apiPost("api/sso/verify", { token: got.token });
+      return await apiPost("api/sso/verify", { values: got.values });
     } catch (e) {
       console.log("[sso] sign-in failed, staying as guest", String(e));
       return null;
