@@ -84,7 +84,9 @@ env 미설정 시 실제 경로는 PERSIST 대상 전부가 `<repo>/data` 아래
 | `headers` | 요청에 그대로 합쳐지는 헤더 — token은 여기 `Authorization`에 둔다 |
 | `api_key_env` | token을 환경변수 이름으로 줄 때 |
 | `response_schema` | 구조화 출력(response_format json_schema) 강제 여부 — **미지원 모델이면 false 유지** |
-| `timeout`, `extra_payload` | 요청 타임아웃 · payload 추가 필드 |
+| `timeout` | LLM 호출 대기(초, 기본 300). 설정값이 그대로 적용된다 |
+| `probe_timeout` | 상태 조회·취소 등 보조 호출 대기(초, 기본 5) |
+| `extra_payload` | payload 추가 필드 |
 
 ## 전달(passthrough) 키 — 게이트웨이 접목 지점
 
@@ -94,10 +96,10 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
 | 키 | 접목 방법 |
 |---|---|
 | `api_base_url` | **게이트웨이 루트. 코드 수정 없이 그대로 동작한다.** `/v1`로 끝나면 `/chat/completions`만 덧붙이고, 모델은 URL 경로가 아니라 요청 body의 `model` 필드로 보낸다 |
-| `header_map` | **전달용 키를 헤더 이름에 매핑.** 예: `{"credential_key": "x-dep-ticket", "user_id": "User-Id"}` |
-| `credential_key` | 자격 티켓 (예: `credential:TICKET-…`). `header_map`으로 헤더 이름을 지정한다 |
-| `send_system_name` | 호출 시스템 식별자. `headers`에 직접 쓰거나 `header_map`으로 매핑 |
-| `user_id` / `user_pw` | 계정 정보. `header_map`으로 헤더에 싣거나, 토큰 발급형이면 발급 API 호출 후 `Authorization` 설정 |
+| `credential_key` | 자격 티켓. **값만 채우면 `x-dep-ticket` 헤더로 전송된다** |
+| `send_system_name` | 호출 시스템 식별자. **값만 채우면 `Send-System-Name` 헤더로 전송된다** |
+| `user_id` | 사용자 식별자. **값만 채우면 `User-Id` 헤더로 전송된다** |
+| `header_map` | **선택.** 게이트웨이가 위와 다른 헤더 이름을 요구할 때만 쓴다. 예: `{"credential_key": "X-Custom-Ticket"}` |
 | `env_model` | 게이트웨이가 요구하는 모델 이름. `model`/`models`에 그 값을 그대로 쓰면 된다 |
 | `OPENAI_API_KEY` | 표준 Bearer token — 기본 구현이 그대로 사용 |
 
@@ -108,20 +110,20 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
   "api_base_url": "https://apigw.example.com/llm/v1",
   "model": "gpt-oss-120b",
   "models": ["gpt-oss-120b", "gpt-oss-20b"],
-  "headers": {
-    "Send-System-Name": "playground",
-    "User-Type": "AD_ID"
-  },
-  "header_map": {
-    "credential_key": "x-dep-ticket",
-    "user_id": "User-Id"
-  },
+  "timeout": 900,
+  "headers": { "User-Type": "AD_ID" },
   "credential_key": "credential:TICKET-...",
+  "send_system_name": "playground",
   "user_id": "yunjy"
 }
 ```
 
 - **모델 목록**은 `models`로 정한다. 소스의 하드코딩 목록을 고칠 필요가 없다.
+- **`credential_key`, `send_system_name`, `user_id`는 값만 채우면** 각각 `x-dep-ticket`,
+  `Send-System-Name`, `User-Id` 헤더로 전송된다. 같은 키를 두 번 쓸 필요가 없다.
+  게이트웨이가 다른 이름을 요구할 때만 `header_map`으로 그 키를 덮어쓴다.
+- **`timeout`은 설정값이 그대로 적용된다**(기본 300초, 상한 없음에 가까움). 응답이 느린
+  게이트웨이는 넉넉히 잡는다. 상태 조회·취소 같은 보조 호출은 `probe_timeout`(기본 5초)이다.
 - **헤더 이름과 값은 적은 그대로 전송된다.** `x-dep-ticket`이 `X-dep-ticket`으로 바뀌지 않는다
   (urllib이 헤더 이름을 `capitalize()`로 바꾸는 문제 때문에 전송 계층에서 `http.client`를 쓴다).
 - 요청 전문 화면에서 `x-dep-ticket` 같은 자격 정보는 `****`로 마스킹된다.

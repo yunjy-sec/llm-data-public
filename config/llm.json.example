@@ -16,12 +16,10 @@
   "api_base_url": "",
   "headers": {
     "Authorization": "Bearer <발급-토큰>",
-    "Send-System-Name": "playground",
     "User-Type": "AD_ID"
   },
   "header_map": {
-    "credential_key": "x-dep-ticket",
-    "user_id": "User-Id"
+    "credential_key": "x-dep-ticket"
   },
   "api_key_env": "LLM_DATA_API_KEY",
   "timeout": 300,
@@ -40,11 +38,12 @@
       "reasoning_effort": []
     }
   },
-  "_비고": "models: 이 환경에서 쓸 모델 목록(미지정 시 기본 목록). api_base_url: 게이트웨이 루트, /v1로 끝나면 /chat/completions만 덧붙이고 모델은 body의 model 필드로 보낸다. headers와 header_map의 이름·값은 대소문자 그대로 전송된다. header_map은 아래 전달용 키의 값을 지정한 헤더 이름으로 보낸다.",
+  "_비고": "models: 이 환경에서 쓸 모델 목록(미지정 시 기본 목록). api_base_url: 게이트웨이 루트, /v1로 끝나면 /chat/completions만 덧붙이고 모델은 body의 model 필드로 보낸다. timeout: LLM 호출 대기(초), probe_timeout: 상태 조회·취소 등 보조 호출(초). credential_key/send_system_name/user_id는 값만 채우면 각각 x-dep-ticket/Send-System-Name/User-Id 헤더로 전송된다. header_map은 게이트웨이가 다른 이름을 요구할 때만 쓴다(선택). headers의 이름·값은 대소문자 그대로 전송되며 header_map보다 우선한다.",
   "OPENAI_API_KEY": "dummy",
   "credential_key": "credential:TICKET-",
   "send_system_name": "playground",
   "env_model": "gpt-oss-120b",
   "user_id": "",
-  "user_pw": ""
+  "user_pw": "",
+  "probe_timeout": 5
 }

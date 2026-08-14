@@ -73,8 +73,36 @@ def load_config():
 
 
 # 프론트에서 편집을 허용하는 키 (그 외 키는 저장 시 버려진다)
+# timeout 상한. 설정값을 그대로 쓰되 오타(예: 밀리초 입력)로 영원히 매달리는 것만 막는다.
+TIMEOUT_MAX = 86400
+
+# 전달용 키 -> 헤더 이름 기본 매핑. header_map을 쓰지 않아도 값만 채우면 전송된다.
+# 게이트웨이가 다른 이름을 요구하면 config의 header_map으로 덮어쓴다(같은 키를 지정하면 교체).
+DEFAULT_HEADER_MAP = {
+    "credential_key": "x-dep-ticket",
+    "send_system_name": "Send-System-Name",
+    "user_id": "User-Id",
+}
+
+
+def req_timeout(cfg):
+    """LLM 호출 타임아웃(초). config의 timeout을 그대로 쓴다(기본 300)."""
+    try:
+        return max(1, min(int(cfg.get("timeout", 300)), TIMEOUT_MAX))
+    except (TypeError, ValueError):
+        return 300
+
+
+def probe_timeout(cfg):
+    """상태 조회·취소 등 보조 호출 타임아웃(초). config의 probe_timeout, 기본 5."""
+    try:
+        return max(1, min(int(cfg.get("probe_timeout", 5)), TIMEOUT_MAX))
+    except (TypeError, ValueError):
+        return 5
+
+
 EDITABLE_KEYS = ("base_url", "url", "model", "headers", "api_key_env", "timeout", "response_schema",
-                 "extra_payload", "model_options", "models", "header_map")
+                 "extra_payload", "model_options", "models", "header_map", "probe_timeout")
 
 # 모델별 추가 설정(요청 payload에 실리는 옵션). 해당 모델이 지원하지 않으면 목록이 비고,
 # 프론트는 그 드롭다운을 비활성 상태로 둔다. config의 "model_options"로 덮어쓸 수 있다.
@@ -145,11 +173,11 @@ def save_config(new_cfg):
         v = new_cfg[k]
         if k in ("base_url", "url", "model", "api_key_env"):
             out[k] = str(v).strip()
-        elif k == "timeout":
+        elif k in ("timeout", "probe_timeout"):
             try:
-                out[k] = max(1, min(int(v), 600))
+                out[k] = max(1, min(int(v), TIMEOUT_MAX))
             except (TypeError, ValueError):
-                raise LLMError("E-2004", "timeout은 정수(초)여야 함", http=400)
+                raise LLMError("E-2004", "%s는 정수(초)여야 함" % k, http=400)
         elif k == "response_schema":
             out[k] = bool(v)
         elif k == "models":
@@ -218,18 +246,20 @@ def chat_url(cfg):
 
 def _headers(cfg):
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    # 전달용 키(credential_key 등)를 헤더로: 값만 채우면 DEFAULT_HEADER_MAP 이름으로 전송되고,
+    # 게이트웨이가 다른 이름을 쓰면 config의 header_map으로 그 키만 덮어쓴다.
+    hmap = dict(DEFAULT_HEADER_MAP)
+    if isinstance(cfg.get("header_map"), dict):
+        hmap.update({str(k): str(v) for k, v in cfg["header_map"].items()})
+    for src, name in hmap.items():
+        val = cfg.get(str(src))
+        if val not in (None, "") and str(name).strip():
+            headers[str(name)] = str(val)
+    # 명시적 headers가 가장 구체적이므로 마지막에 덮어쓴다. 이름과 값은 적은 그대로(대소문자 보존)
     extra = cfg.get("headers")
     if isinstance(extra, dict):
         for k, v in extra.items():
             headers[str(k)] = str(v)
-    # header_map: {"credential_key": "x-dep-ticket"} 처럼 전달용 키를 헤더 이름에 매핑.
-    # 이름과 값 모두 설정에 적은 그대로 전송된다(대소문자 보존).
-    hmap = cfg.get("header_map")
-    if isinstance(hmap, dict):
-        for src, name in hmap.items():
-            val = cfg.get(str(src))
-            if val not in (None, "") and str(name).strip():
-                headers[str(name)] = str(val)
     key_env = cfg.get("api_key_env")
     if key_env:
         secret = os.environ.get(str(key_env))
@@ -367,11 +397,11 @@ def chat_messages(messages, schema=None, cfg=None, tag="CHAT", meta_out=None):
             "model": payload["model"],
             "payload_bytes": len(body),
             "response_format": "response_format" in payload,
-            "timeout_s": max(1, min(int(cfg.get("timeout", 300)), 600)),
+            "timeout_s": req_timeout(cfg),
             "headers": masked_headers(cfg),  # 토큰류는 마스킹된 상태
             "payload": payload,              # 실제 전송 body 전문
         })
-    timeout = max(1, min(int(cfg.get("timeout", 300)), 600))
+    timeout = req_timeout(cfg)
     print("[LLM] -> %s POST %s | body %d bytes | response_format=%s | timeout=%ds"
           % (tag, url, len(body), "YES" if "response_format" in payload else "no", timeout))
     started = time.time()
@@ -453,7 +483,7 @@ def cancel(cfg=None):
     """실행 중 호출 취소 (llm-api POST /cancel). 실패해도 무시하는 best-effort."""
     cfg = cfg or load_config()
     try:
-        res = _http("POST", _api_root(cfg) + "/cancel", cfg, data=b"{}", timeout=3)
+        res = _http("POST", _api_root(cfg) + "/cancel", cfg, data=b"{}", timeout=probe_timeout(cfg))
         if res.status >= 400:
             return {"cancelled": False}
         return json.loads(res.body.decode("utf-8"))
@@ -467,7 +497,7 @@ def upstream_services(cfg=None):
     cfg = cfg or load_config()
     try:
         root = _api_root(cfg)
-        res = _http("GET", root + "/api/health", cfg, timeout=5)
+        res = _http("GET", root + "/api/health", cfg, timeout=probe_timeout(cfg))
         if res.status >= 400:
             raise LLMError("E-2001", "HTTP %s" % res.status)
         h = json.loads(res.body.decode("utf-8"))
@@ -496,7 +526,7 @@ def upstream_health(cfg=None):
     cfg = cfg or load_config()
     try:
         url = _api_root(cfg) + "/api/health"
-        res = _http("GET", url, cfg, timeout=3)
+        res = _http("GET", url, cfg, timeout=probe_timeout(cfg))
         if res.status >= 400:
             raise LLMError("E-2001", "HTTP %s" % res.status)
         h = json.loads(res.body.decode("utf-8"))
