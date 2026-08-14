@@ -3645,8 +3645,10 @@
           const v = pickPath(doc, map[name]);
           if (v) values[name] = v; else missing.push(name + ' at "' + map[name] + '"');
         });
-        finish(missing.length ? { error: "missing " + missing.join(", "), raw: doc, values: values }
-          : { values: values, raw: doc });
+        // message = 에이전트가 보낸 원본 메시지 (경로를 맞출 때 이걸 보고 고친다).
+        // 필드 이름을 raw로 두면 응답 안의 키로 오해된다.
+        finish(missing.length ? { error: "missing " + missing.join(", "), message: doc, values: values }
+          : { values: values, message: doc });
       };
       ws.onerror = () => { clearTimeout(timer); finish({ error: "websocket error " + url }); };
       ws.onclose = (ev) => {

@@ -7,15 +7,15 @@
       "data": "KCC10TRAY0153"
     },
     "response": {
-      "userInfo": "raw.data.userInfo",
-      "key": "raw.data.key"
+      "userInfo": "data.userInfo",
+      "key": "data.key"
     },
     "etc": {
       "설명": "1단계. 브라우저가 사용자 PC의 KnoxTray에 웹소켓으로 붙어 SSO 토큰을 받는다.",
       "url": "여기서 localhost는 서버가 아니라 사용자 PC다. 그래서 이 단계는 브라우저만 할 수 있다. 이 주소는 그대로 localhost로 둔다.",
       "request": "KnoxTray로 보낼 메시지. 적은 key와 value가 그대로 JSON으로 나간다.",
-      "response": "받은 메시지에서 값을 꺼낼 경로. 경로 중간이 JSON 문자열이면 자동으로 한 번 파싱하고 계속 내려간다 (raw.data가 문자열인 응답용).",
-      "response 확인": "실제 응답 모양은 브라우저 콘솔의 [sso] local agent 줄에 raw로 찍힌다. 경로가 다르면 그걸 보고 맞춘다.",
+      "response": "받은 메시지에서 값을 꺼낼 경로. 경로 중간이 JSON 문자열이면 자동으로 한 번 파싱하고 계속 내려간다. KnoxTray는 data가 JSON 문자열이라 data.userInfo로 적는다.",
+      "response 확인": "실제 응답 모양은 브라우저 콘솔의 [sso] local agent 줄에 message로 찍힌다. 경로가 다르면 그걸 보고 맞춘다.",
       "userInfo": "base64 인코딩 AES/CBC 암호문",
       "key": "RSA로 암호화된 AES 키 (base64)",
       "timeout": 3
@@ -53,7 +53,7 @@
   },
   "etc": {
     "흐름 1": "브라우저가 ws://localhost:29282에 붙어 local.request를 보낸다.",
-    "흐름 2": "KnoxTray 응답에서 local.response 경로로 userInfo와 key를 꺼낸다 (raw.data는 JSON 문자열이라 자동 파싱된다).",
+    "흐름 2": "KnoxTray 응답에서 local.response 경로로 userInfo와 key를 꺼낸다 (data가 JSON 문자열이라 자동 파싱된다).",
     "흐름 3": "그 둘을 verify.body의 token에 JSON 문자열로 담아 verify.url로 POST한다.",
     "흐름 4": "서버가 RSA 개인키로 key를 복호화하고 AES/CBC(IV=0x00*16)로 userInfo를 복호화해 사용자 정보를 돌려준다.",
     "흐름 5": "verify.response 경로로 id 이름 부서를 꺼내 화면에 표시한다.",

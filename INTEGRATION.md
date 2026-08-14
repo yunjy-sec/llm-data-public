@@ -247,7 +247,7 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
   "local": {
     "url": "ws://localhost:29282",
     "request": { "rqtype": "getknoxsso", "token": "", "data": "KCC10TRAY0153" },
-    "response": { "userInfo": "raw.data.userInfo", "key": "raw.data.key" },
+    "response": { "userInfo": "data.userInfo", "key": "data.key" },
     "etc": { "timeout": 3 }
   },
   "verify": {
@@ -268,15 +268,17 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
 실제 흐름은 이렇게 돈다.
 
 1. 브라우저가 `ws://localhost:29282`에 붙어 `local.request`를 그대로 보낸다.
-2. 응답의 `raw.data`(JSON 문자열)를 파싱해 `userInfo`와 `key`를 꺼낸다.
-   경로 중간이 JSON 문자열이면 자동으로 한 번 파싱하고 계속 내려간다.
+2. 응답의 `data`(JSON 문자열)를 파싱해 `userInfo`와 `key`를 꺼낸다.
+   **경로 중간 값이 JSON 문자열이면 자동으로 객체로 바꾸고 계속 내려간다** —
+   KnoxTray 응답은 `{"data": "{\"result\":\"success\",\"userInfo\":…,\"key\":…}"}` 모양이라
+   경로를 `data.userInfo`로 적으면 된다.
 3. 그 둘을 `verify.body`의 `token`에 **JSON 문자열**로 담아 `verify.url`로 POST한다.
 4. 서버가 RSA 개인키로 `key`를 풀고 AES/CBC(IV=0x00×16)로 `userInfo`를 풀어 사용자 정보를 돌려준다.
 5. `verify.response` 경로로 id·이름·부서를 꺼내 화면에 표시한다.
 
 - `local.request` — 에이전트로 보낼 메시지. 적은 key와 value가 그대로 JSON으로 나간다.
 - `local.response` — 받은 메시지에서 값을 꺼낼 경로를 이름마다 적는다. 실제 응답 모양은
-  브라우저 콘솔의 `[sso] local agent` 줄에 `raw`로 찍히므로 그걸 보고 맞춘다.
+  브라우저 콘솔의 `[sso] local agent` 줄에 `message`로 찍히므로 그걸 보고 맞춘다.
 - `verify.body` — 실을 key와 value를 그대로 적는다. 값의 `{이름}`이 1단계 값으로 치환되고,
   `{"json": {...}}`로 감싸면 그 안을 채운 뒤 **JSON 문자열**로 만든다.
 - `verify.response` — 응답에서 id·이름·부서를 꺼낼 경로.
