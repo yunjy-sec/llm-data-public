@@ -36,15 +36,15 @@
       }
     },
     "response": {
-      "id": "data.response.EP_LOGINID",
-      "name": "data.response.EP_USERNAME",
-      "dept": "data.response.EP_DEPTNAME"
+      "id": ["data.response.EP_LOGINID", "EP_LOGINID"],
+      "name": ["data.response.EP_USERNAME", "EP_USERNAME"],
+      "dept": ["data.response.EP_DEPTNAME", "EP_DEPTNAME"]
     },
     "etc": {
       "설명": "2단계. 서버가 1단계 값을 담아 복호화 요청을 보낸다. 서버가 RSA로 key를 풀고 AES/CBC로 userInfo를 풀어 사용자 정보를 돌려준다.",
       "url": "8000 포트만 localhost가 아니다. 실제 호스트를 적는다. 경로를 빼고 호스트만 적으면 /api/verify_sso를 붙인다.",
       "body": "요청 본문에 실을 key와 value를 그대로 적는다. \"{이름}\"은 1단계 값으로 치환되고, {\"json\": {...}}로 감싸면 그 안을 채운 뒤 JSON 문자열로 만든다.",
-      "response": "응답에서 값을 꺼낼 경로. 여기서도 경로 중간이 JSON 문자열이면 자동으로 객체로 바꾸고 계속 내려간다. 응답이 {\"data\": {\"response\": \"{\\\"EP_LOGINID\\\": ...}\"}} 모양이라 data.response.EP_LOGINID로 적는다. 배열로 후보 경로를 여러 개 줄 수도 있다. id를 못 찾으면 guest로 남고 주황 LED가 켜진다.",
+      "response": "응답에서 값을 꺼낼 경로. 경로 중간이 JSON 문자열이면 자동으로 객체로 바꾸고 계속 내려간다. 배열로 후보를 여러 개 줄 수 있고, 여기 적은 경로에서 못 찾으면 기본 후보(data.response.EP_* / data.EP_* / response.EP_* / userInfo.EP_* / EP_*)로 이어서 찾는다. 본문 전체가 JSON 문자열인 응답도 그대로 처리된다. id를 못 찾으면 guest로 남고 주황 LED가 켜진다.",
       "method": "POST",
       "method 설명": "405가 오면 다른 메서드로 한 번 재시도하고 로그를 남긴다.",
       "forward_headers": ["Cookie", "Authorization"],

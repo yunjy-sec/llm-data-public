@@ -255,9 +255,9 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
     "header": { "Content-Type": "application/json", "Accept": "application/json" },
     "body": { "token": { "json": { "userInfo": "{userInfo}", "key": "{key}" } } },
     "response": {
-      "id": "data.response.EP_LOGINID",
-      "name": "data.response.EP_USERNAME",
-      "dept": "data.response.EP_DEPTNAME"
+      "id": ["data.response.EP_LOGINID", "EP_LOGINID"],
+      "name": ["data.response.EP_USERNAME", "EP_USERNAME"],
+      "dept": ["data.response.EP_DEPTNAME", "EP_DEPTNAME"]
     },
     "etc": { "method": "POST", "timeout": 3, "forward_headers": ["Cookie", "Authorization"] }
   },
@@ -281,11 +281,11 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
   브라우저 콘솔의 `[sso] local agent` 줄에 `message`로 찍히므로 그걸 보고 맞춘다.
 - `verify.body` — 실을 key와 value를 그대로 적는다. 값의 `{이름}`이 1단계 값으로 치환되고,
   `{"json": {...}}`로 감싸면 그 안을 채운 뒤 **JSON 문자열**로 만든다.
-- `verify.response` — 응답에서 id·이름·부서를 꺼낼 경로. 여기서도 중간 값이 JSON 문자열이면
-  자동으로 객체로 바꾸고 계속 내려간다. 실제 응답은
-  `{"result":"success","data":{"response":"{\"EP_LOGINID\":…}"}}` 모양이라
-  `data.response.EP_LOGINID`로 적는다. 배열로 후보 경로를 여러 개 줄 수도 있고,
-  `response`를 아예 생략하면 기본 후보(`data.response.EP_*` → `data.EP_*` → `EP_*`)로 찾는다.
+- `verify.response` — 응답에서 id·이름·부서를 꺼낼 경로. 중간 값이 JSON 문자열이면 자동으로
+  객체로 바꾸고 계속 내려가며, **본문 전체가 JSON 문자열인 응답**(`"{\"EP_LOGINID\":…}"`)도
+  그대로 처리한다. 배열로 후보를 여러 개 줄 수 있고, **여기 적은 경로에서 못 찾으면 기본 후보로
+  이어서 찾는다** (`data.response.EP_*` → `data.EP_*` → `response.EP_*` → `userInfo.EP_*` → `EP_*`).
+  그래서 응답 구조를 정확히 몰라도 대개 붙는다.
 - **`ws://localhost`는 그대로 둔다.** 사용자 PC의 에이전트라서 브라우저가 붙어야 한다.
   8000 포트만 실제 호스트 주소로 바꾼다.
 - `verify.url` — 적은 호스트로 그대로 나간다. 경로를 빼고 호스트만 적으면 `/api/verify_sso`를 붙인다.

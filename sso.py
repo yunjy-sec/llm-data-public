@@ -67,10 +67,15 @@ VERIFY_PATH = "/api/verify_sso"
 DEFAULT_METHOD = "POST"          # 이 endpoint는 POST를 받는다
 DEFAULT_FORWARD = ("Cookie", "Authorization")
 # 응답에서 값을 꺼낼 기본 경로. 후보를 여러 개 두어 중첩이 조금 달라도 찾는다.
+# 후보 경로를 여러 개 두어 응답 중첩이 달라도 찾는다. 마지막 후보(EP_ 이름만)는
+# 본문 전체가 JSON 문자열이고 그 안에 EP_ 필드가 바로 있는 경우를 잡는다.
 DEFAULT_RESPONSE = {
-    "id": ["data.response.EP_LOGINID", "data.EP_LOGINID", "response.EP_LOGINID", "EP_LOGINID"],
-    "name": ["data.response.EP_USERNAME", "data.EP_USERNAME", "response.EP_USERNAME", "EP_USERNAME"],
-    "dept": ["data.response.EP_DEPTNAME", "data.EP_DEPTNAME", "response.EP_DEPTNAME", "EP_DEPTNAME"],
+    "id": ["data.response.EP_LOGINID", "data.EP_LOGINID", "response.EP_LOGINID",
+           "userInfo.EP_LOGINID", "EP_LOGINID"],
+    "name": ["data.response.EP_USERNAME", "data.EP_USERNAME", "response.EP_USERNAME",
+             "userInfo.EP_USERNAME", "EP_USERNAME"],
+    "dept": ["data.response.EP_DEPTNAME", "data.EP_DEPTNAME", "response.EP_DEPTNAME",
+             "userInfo.EP_DEPTNAME", "EP_DEPTNAME"],
 }
 
 _LOCK = threading.Lock()
@@ -260,10 +265,19 @@ def _pick_any(obj, paths):
 
 
 def _response_map(verify):
-    m = verify.get("response")
-    if not isinstance(m, dict) or not m:
-        return dict(DEFAULT_RESPONSE)
-    return {k: v for k, v in m.items() if str(k) != "disabled"}
+    """응답에서 값을 꺼낼 경로 후보. 설정에 적은 경로를 먼저 쓰고, 못 찾으면 기본 후보로
+    넘어간다. 설정 경로 하나만 시도하고 끝내면 응답 구조가 조금만 달라도 실패한다."""
+    m = verify.get("response") if isinstance(verify.get("response"), dict) else {}
+    out = {}
+    for k, dflt in DEFAULT_RESPONSE.items():
+        v = m.get(k)
+        paths = [v] if isinstance(v, str) and v else [str(x) for x in (v or []) if str(x)]
+        out[k] = paths + [p for p in dflt if p not in paths]
+    for k, v in m.items():  # 설정에만 있는 추가 필드도 그대로 쓴다
+        if k in out or str(k) == "disabled":
+            continue
+        out[k] = [v] if isinstance(v, str) else [str(x) for x in (v or [])]
+    return out
 
 
 def _preview(body, limit=600):
@@ -359,7 +373,7 @@ def whoami(incoming_headers=None, values=None):
                         result[k] = v
             else:
                 # 통신은 됐는데 찾는 값이 없는 경우. 원인을 보도록 응답을 일부 싣는다
-                result["error"] = "응답에서 id를 찾지 못함 (경로 %s)" % fields.get("id")
+                result["error"] = "응답에서 id를 찾지 못함 (시도한 경로 %s)" % ", ".join(fields.get("id") or [])
                 result["response"] = _preview(doc if doc is not None else text)
         else:
             result["error"] = "HTTP %s" % status
