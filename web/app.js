@@ -2699,6 +2699,9 @@
   // 범위는 llm.json의 etc.latency_scale / etc.token_scale에서 온다.
   const RAMP_LIGHT = ["#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b"];
   const RAMP_DARK = ["#256abf", "#2a78d6", "#3987e5", "#5598e7", "#6da7ec", "#86b6ef", "#9ec5f4"];
+  // 오래 걸리는 구간: 주황 -> 빨강. 1분을 넘으면 여기로 넘어간다.
+  const WARM_LIGHT = ["#c2761a", "#bb4f16", "#b42318"];
+  const WARM_DARK = ["#f5a54b", "#f78a59", "#f97066"];
   const ALARM_LIGHT = "#b42318";
   const ALARM_DARK = "#f97066";
 
@@ -2715,8 +2718,8 @@
   }
 
   // 램프 위 위치 p(0~1)의 색. 문서화된 단계 사이를 선형 보간하므로 색상과 밝기 순서가 유지된다.
-  function rampAt(p) {
-    const ramp = isDark() ? RAMP_DARK : RAMP_LIGHT;
+  function rampAt(p, ramp) {
+    ramp = ramp || (isDark() ? RAMP_DARK : RAMP_LIGHT);
     const x = Math.max(0, Math.min(1, p)) * (ramp.length - 1);
     const i = Math.min(ramp.length - 2, Math.floor(x));
     const t = x - i;
@@ -2736,15 +2739,21 @@
     const sc = (state.scales || {})[name] || {};
     return name === "latency"
       ? { lo: sc.min_s != null ? sc.min_s : 0.5, hi: sc.max_s != null ? sc.max_s : 300,
+          warm: sc.warm_s != null ? sc.warm_s : 60,
           alarm: sc.alarm_s != null ? sc.alarm_s : 300 }
       : { lo: sc.min != null ? sc.min : 100, hi: sc.max != null ? sc.max : 100000,
           alarm: sc.alarm != null ? sc.alarm : Infinity };
   }
 
+  // 1분(warm_s)까지는 파랑이 진해지고, 그 뒤로는 주황에서 빨강으로 간다.
+  // 두 구간 모두 연속이고, 넘어가는 지점만 눈에 띄게 바뀐다 — "오래 걸린다"를 알아보게.
   function latencyColor(sec) {
     const c = scaleCfg("latency");
     if (sec >= c.alarm) return isDark() ? ALARM_DARK : ALARM_LIGHT;
-    return rampAt(logPos(sec, c.lo, c.hi));
+    if (sec >= c.warm) {
+      return rampAt(logPos(sec, c.warm, c.alarm), isDark() ? WARM_DARK : WARM_LIGHT);
+    }
+    return rampAt(logPos(sec, c.lo, c.warm));
   }
 
   function tokenColor(n) {
@@ -3361,6 +3370,16 @@
       }
       rekeyTx(sentChatId || "", r.id);   // 새 대화였다면 "" -> 새 id
       _lastChatId = r.id || "";
+      if (r.stopped) {
+        // 정지: 질문은 남고 답변 자리는 비어 있다. 입력창으로 되돌리지 않는다.
+        if (state.chatId === sentChatId) {
+          state.scrollAnchor = "last-user";
+          await loadChatDoc(r.id);
+        }
+        refreshChats();
+        toast("Stopped. The question was kept.");
+        return;
+      }
       const stillViewing = state.chatId === sentChatId; // 새 대화(null)였다면 여전히 null인지
       if (stillViewing) {
         state.scrollAnchor = "last-user"; // 답변 도착 후에도 질문을 상단에 유지

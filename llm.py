@@ -181,7 +181,7 @@ def req_timeout(cfg):
 
 # 화면에서 소요 시간·토큰 크기를 색으로 보일 때 쓰는 범위. 설정에서 덮어쓸 수 있다.
 DEFAULT_SCALES = {
-    "latency": {"min_s": 0.5, "max_s": 300, "alarm_s": 300},
+    "latency": {"min_s": 0.5, "warm_s": 60, "max_s": 300, "alarm_s": 300},
     "token": {"min": 100, "max": 100000},
 }
 

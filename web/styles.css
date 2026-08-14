@@ -327,7 +327,9 @@ pre.raw.wrap { white-space: pre-wrap; word-break: break-all; }
 .msg.user { background: var(--accent); color: #fff; border-bottom-right-radius: 3px; }
 .msg.assistant { background: var(--bg); border: 1px solid var(--line); border-bottom-left-radius: 3px; }
 /* 응답 대기 표시는 채팅창 하단에 sticky로 항상 보이게 — 긴 질문에 밀려 잘리지 않는다 */
-.msg.pending { align-self: flex-start; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 4px 9px; font-size: 12px; position: sticky; bottom: 2px; background: var(--card); z-index: 3; box-shadow: 0 1px 6px rgba(0, 0, 0, .12); flex-shrink: 0; }
+/* 대기 표시는 대화 흐름에 그대로 둔다 — 화면에 붙어 따라다니면 스크롤로 위를 볼 때
+   질문이 이전 대화를 덮어 읽기를 방해한다 */
+.msg.pending { align-self: flex-start; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 4px 9px; font-size: 12px; background: var(--card); flex-shrink: 0; }
 /* 캡션 항목은 모두 같은 높이 기준으로 정렬하고, 구분은 가운데 점 대신 간격으로 */
 .mcap { font-size: 10px; color: var(--muted); margin: 1px 4px 0; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; line-height: 1.6; }
 .mcap > * { display: inline-flex; align-items: center; line-height: 1.6; }
@@ -351,13 +353,11 @@ pre.raw.wrap { white-space: pre-wrap; word-break: break-all; }
 .msgedit textarea { width: 100%; min-height: 56px; margin: 0; border: none; background: transparent; font-size: 12.5px; padding: 0; resize: vertical; box-sizing: border-box; color: var(--fg); font-family: inherit; }
 .msgedit textarea:focus { outline: none; }
 /* 질문 말풍선 + 대기 표시 한 줄 — 아랫변 기준 정렬, 대화와 같은 쪽(우측) */
-.pendrow { display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px;
-  position: sticky; bottom: 2px; z-index: 3; }
+.pendrow { display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px; }
 .pendrow .msgwrap { max-width: 72%; }
 .pendrow .msg.pending { position: static; align-self: flex-end; margin: 0; flex: 0 0 auto; }
-/* 수정 재전송은 그 대화 위치에 그대로 둔다 (하단 sticky 해제) */
+/* 수정 재전송도 그 대화 위치에 그대로 둔다 */
 .pendrow.atpos { position: static; }
-.pendrow.atpos .msg.pending { box-shadow: none; }
 /* 목록 끝 여백: 어떤 질문이든 화면 맨 위까지 스크롤할 수 있게 한다 */
 .msgspacer { flex: 0 0 auto; pointer-events: none; }
 /* 새 분기로 곧 교체될 이후 메시지 */

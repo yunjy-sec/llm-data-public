@@ -1463,6 +1463,7 @@ class Handler(BaseHTTPRequestHandler):
                                   {"id": rid, "row": {k: v for k, v in removed.items() if k != "_job"}})
                     return self._json({"deleted": True, "id": rid, "total": len(ds["rows"])})
             if path == "/api/chat/send":
+                # (정지 처리는 아래 stop_and_save에서 한 곳으로 모은다)
                 # 다중 턴 대화: 이력 전체를 매 턴 LLM에 보내 컨텍스트를 유지한다.
                 # blocking — 클라이언트는 긴 타임아웃으로 대기 (llm-api 전역 직렬 큐 뒤에 설 수 있음)
                 body = self._body() or {}
@@ -1502,6 +1503,16 @@ class Handler(BaseHTTPRequestHandler):
                                                  "model": llm.current_model(cfg),
                                                  "title": chat.get("title") or "",
                                                  "token": str(body.get("client_token") or "")}
+                    def stop_and_save():
+                        """정지: 질문은 남기고 답변 자리는 비운다. 대화도 목록에 남는다.
+                        (실패와 다르다 — 실패는 재전송할 수 있도록 아무것도 저장하지 않는다.)"""
+                        chat["messages"] = history      # user 메시지까지만
+                        chat["model"] = llm.current_model(cfg)
+                        chat["updated_at"] = now_iso()
+                        save_chat(chat)
+                        return self._json({"id": chat["id"], "title": chat["title"],
+                                           "stopped": True, "count": len(history)})
+
                     try:
                         try:
                             got, stopped = call_cancellable(chat["id"], lambda: llm.chat_messages(
@@ -1509,17 +1520,17 @@ class Handler(BaseHTTPRequestHandler):
                                 tag="%s | %s" % (chat["id"], caller(self)),
                                 meta_out=req_meta, key=chat["id"]))
                             if stopped:
-                                return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
+                                return stop_and_save()
                             content, usage, latency_ms = got
                         except llm.LLMError as e:
-                            # 사용자가 정지한 경우엔 오류가 아니라 취소로 응답한다
+                            # 사용자가 정지한 경우엔 오류가 아니라 정지로 처리한다
                             if (_CHAT_PENDING.get(chat["id"]) or {}).get("cancelled"):
-                                return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
+                                return stop_and_save()
                             # 실패 시 user 메시지는 저장하지 않는다 (재전송 가능하게)
                             return self._error(e.http, e.message, e.code)
                         if (_CHAT_PENDING.get(chat["id"]) or {}).get("cancelled"):
-                            # 응답이 도착했어도 정지 요청이 있었으면 저장하지 않는다
-                            return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
+                            # 응답이 도착했어도 정지 요청이 있었으면 답변을 버린다
+                            return stop_and_save()
                         req_meta["ts"] = now_iso()
                         chat["last_response"] = {"envelope": req_meta.pop("response_envelope", None),
                                                  "bytes": req_meta.pop("response_bytes", 0),
