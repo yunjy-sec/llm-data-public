@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 import llm
 import sso
 import access
+import rates
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
@@ -611,6 +612,25 @@ def access_decision(handler):
         return None
 
 
+def rate_count(model, err=None, usage=None):
+    """rate 집계에 한 건 반영. 게이트웨이와 실제로 통신이 이루어진 요청만 센다.
+
+    전송 자체가 실패했거나(연결 불가·타임아웃) 5xx면 요청이 처리되지 않은 것이므로
+    부하로 세지 않는다. 4xx는 서버가 받아서 답한 것이라 센다.
+    """
+    if err is not None:
+        http = getattr(err, "http", None)
+        if http is None:
+            # http가 없는 E-2001은 전송 실패다 (응답을 받았다면 상태가 들어 있다)
+            if getattr(err, "code", "") == "E-2001":
+                return
+        elif http >= 500:
+            return
+    rates.record_request(model)
+    if usage is not None:
+        rates.record_usage(model, usage)
+
+
 def call_cancellable(pending_key, fn, poll=0.2):
     """LLM 호출을 별도 스레드에서 돌리고, 정지되면 기다리지 않고 곧바로 돌아온다.
 
@@ -997,6 +1017,9 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:  # sso 모듈 문제로 화면이 막히지 않게 한다
                     return self._json({"id": "guest", "source": "none", "service": "down",
                                        "error": "%s: %s" % (type(e).__name__, e)})
+            if path == "/api/rates":
+                # 서버 전체 부하 지표(모델별). 누가 무엇을 물었는지는 담기지 않는다.
+                return self._json(rates.snapshot())
             if path == "/api/access/check":
                 # 접근 판단. access.py는 sso를 모르므로 서버가 사용자 정보를 넘겨준다.
                 try:
@@ -1504,14 +1527,27 @@ class Handler(BaseHTTPRequestHandler):
                                                  "title": chat.get("title") or "",
                                                  "token": str(body.get("client_token") or "")}
                     def stop_and_save():
-                        """정지: 질문은 남기고 답변 자리는 비운다. 대화도 목록에 남는다.
-                        (실패와 다르다 — 실패는 재전송할 수 있도록 아무것도 저장하지 않는다.)"""
+                        """정지: 질문은 남기고 답변 자리는 비운다."""
                         chat["messages"] = history      # user 메시지까지만
                         chat["model"] = llm.current_model(cfg)
                         chat["updated_at"] = now_iso()
                         save_chat(chat)
                         return self._json({"id": chat["id"], "title": chat["title"],
                                            "stopped": True, "count": len(history)})
+
+                    def fail_and_save(err):
+                        """실패: 질문을 남기고 답변 자리에 실패 사유를 남긴다.
+                        정지(답변 자리가 빈다)와 화면에서 구분된다."""
+                        history.append({"role": "assistant", "content": err.message,
+                                        "ts": now_iso(), "model": llm.current_model(cfg),
+                                        "failed": True, "code": err.code})
+                        chat["messages"] = history
+                        chat["model"] = llm.current_model(cfg)
+                        chat["updated_at"] = now_iso()
+                        save_chat(chat)
+                        return self._json({"id": chat["id"], "title": chat["title"],
+                                           "failed": True, "code": err.code,
+                                           "message": err.message, "count": len(history)})
 
                     try:
                         try:
@@ -1520,17 +1556,20 @@ class Handler(BaseHTTPRequestHandler):
                                 tag="%s | %s" % (chat["id"], caller(self)),
                                 meta_out=req_meta, key=chat["id"]))
                             if stopped:
+                                rate_count(llm.current_model(cfg))  # 이미 나간 요청이다
                                 return stop_and_save()
                             content, usage, latency_ms = got
                         except llm.LLMError as e:
+                            rate_count(llm.current_model(cfg), err=e)
                             # 사용자가 정지한 경우엔 오류가 아니라 정지로 처리한다
                             if (_CHAT_PENDING.get(chat["id"]) or {}).get("cancelled"):
                                 return stop_and_save()
-                            # 실패 시 user 메시지는 저장하지 않는다 (재전송 가능하게)
-                            return self._error(e.http, e.message, e.code)
+                            # 실패도 질문을 남기고, 답변 자리에 실패 사유를 남긴다
+                            return fail_and_save(e)
                         if (_CHAT_PENDING.get(chat["id"]) or {}).get("cancelled"):
                             # 응답이 도착했어도 정지 요청이 있었으면 답변을 버린다
                             return stop_and_save()
+                        rate_count(llm.current_model(cfg), usage=usage)
                         req_meta["ts"] = now_iso()
                         chat["last_response"] = {"envelope": req_meta.pop("response_envelope", None),
                                                  "bytes": req_meta.pop("response_bytes", 0),
@@ -1586,14 +1625,17 @@ class Handler(BaseHTTPRequestHandler):
                                 tag="%s | %s" % (cid, caller(self)),
                                 meta_out=req_meta, key=cid))
                             if stopped:
+                                rate_count(llm.current_model(cfg))  # 이미 나간 요청이다
                                 return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
                             content, usage, latency_ms = got
                         except llm.LLMError as e:
+                            rate_count(llm.current_model(cfg), err=e)
                             if (_CHAT_PENDING.get(cid) or {}).get("cancelled"):
                                 return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
                             return self._error(e.http, e.message, e.code)  # 실패 시 분기 생성 안 함
                         if (_CHAT_PENDING.get(cid) or {}).get("cancelled"):
                             return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
+                        rate_count(llm.current_model(cfg), usage=usage)
                         # 성공 후에만 분기 패킹: 현재 suffix(+하위 분기)를 variant로 보존
                         alts = chat.setdefault("alts", {})
                         key = str(idx)

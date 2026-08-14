@@ -176,6 +176,7 @@
         $("#schema").value = JSON.stringify(schema, null, 2);
       }
       loadSettings();
+      refreshRates();   // 주기·창 길이·색 범위는 이 응답에 담겨 온다
       // SSO: 1단계(로컬 에이전트 웹소켓)를 먼저 시도하고, 없거나 실패하면 쿠키만으로 확인한다.
       // 어느 쪽이 실패하든 id는 guest로 남고 나머지 기능은 그대로 동작한다.
       ssoSignIn().then((w) => w || api("api/whoami")).then(applySsoUser).catch(() => {});
@@ -2125,6 +2126,25 @@
   }
 
   // 새로고침·재접속해도 진행 중 전송을 복원: 서버 _CHAT_PENDING 기반 렌더링 + 완료 폴링
+  // 대기 중인 한 턴의 마크업. 완료 상태(질문 줄 + 답변 줄)와 같은 구조라
+  // 답변이 도착해도 자리가 움직이지 않는다.
+  function pendingTurnHtml(msg, startMs, editIndex) {
+    const label = (editIndex != null ? "#" + editIndex + " edit resend " : "") + "waiting for response ";
+    return '<div class="msgwrap user" id="chat-just-sent"><div class="msg user">' +
+      esc(msg) + "</div></div>" +
+      '<div class="msgwrap assistant" id="chat-pending-wrap">' +
+      '<div class="msg assistant pending" id="chat-pending"><span class="spin"></span> ' +
+      label + timerHtml(startMs) + "</div></div>";
+  }
+
+  // 대기 표시 제거 — 질문 줄과 답변 자리 두 개를 함께 걷어낸다
+  function removePendingTurn() {
+    ["chat-just-sent", "chat-pending-wrap"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    });
+  }
+
   function restorePending(doc) {
     clearTimeout(state.pendingPollTimer);
     if (!doc || !doc.pending || !state.chatId) {
@@ -2140,24 +2160,18 @@
     const box = $("#chat-messages");
     if (!document.getElementById("chat-pending")) {
       if (box.querySelector(".empty")) box.innerHTML = "";
-      // 질문 말풍선과 대기 표시를 한 줄로 — 대화와 같은 쪽(우측)에 붙이고 아랫변을 맞춘다
-      const row = (cls) => '<div class="pendrow' + cls + '">' +
-        '<div class="msg pending" id="chat-pending"><span class="spin"></span> ' +
-        (p.edit_index != null ? "#" + p.edit_index + " edit resend " : "") + "waiting for response " +
-        timerHtml(Date.parse(p.ts) || Date.now()) + "</div>" +
-        '<div class="msgwrap user" id="chat-just-sent"><div class="msg user">' +
-        esc(p.message) + "</div></div></div>";
+      const row = () => pendingTurnHtml(p.message, Date.parse(p.ts) || Date.now(), p.edit_index);
       if (p.edit_index != null) {
         // 수정 재전송은 그 대화 위치에서 진행 중이므로 대기 표시도 그 자리에 둔다.
         // 수정 대상부터 뒤쪽 메시지는 곧 새 분기로 교체되므로 흐리게 표시한다.
         const target = box.children[p.edit_index];
         const doomed = [];
         for (let i = p.edit_index; i < box.children.length; i++) doomed.push(box.children[i]);
-        if (target) target.insertAdjacentHTML("beforebegin", row(" atpos"));
-        else box.insertAdjacentHTML("beforeend", row(" atpos"));
+        if (target) target.insertAdjacentHTML("beforebegin", row());
+        else box.insertAdjacentHTML("beforeend", row());
         doomed.forEach((el) => el.classList.add("superseded"));
       } else {
-        box.insertAdjacentHTML("beforeend", row(""));
+        box.insertAdjacentHTML("beforeend", row());
       }
       scrollMsgIntoTop(document.getElementById("chat-just-sent"));
     }
@@ -2762,6 +2776,51 @@
     return rampAt(logPos(n, c.lo, c.hi));
   }
 
+  // ---- 서버 전체 요청 지표 (모델별) ----
+  // 내 사용량이 아니라 이 서버가 지금 얼마나 붐비는지를 본다. 창 길이·주기·색 범위는
+  // 모두 서버(config/server.json의 rate)에서 내려온다 — 여기에 적힌 값은 없다.
+
+  function rateColor(v, sc) {
+    const lo = Number((sc || {}).min) || 0;
+    const hi = Number((sc || {}).max) || 0;
+    if (!(lo > 0) || !(hi > lo)) return "";   // 범위를 못 받으면 색을 입히지 않는다
+    return rampAt(logPos(v, lo, hi));
+  }
+
+  function rateNum(v, sc, unit) {
+    const n = Number(v) || 0;
+    const txt = n >= 10 ? fmtNum(Math.round(n)) : n.toFixed(1).replace(/\.0$/, "");
+    const col = rateColor(n, sc);
+    return '<b class="ratev"' + (col ? ' style="color:' + col + '"' : "") + ">" + txt + "</b>" +
+      '<span class="rateu">' + unit + "</span>";
+  }
+
+  function renderRates(doc) {
+    const bar = document.getElementById("rate-bar");
+    if (!bar) return;
+    const rows = (doc && doc.rates) || [];
+    if (!rows.length) { bar.hidden = true; bar.innerHTML = ""; return; }
+    const sc = doc.scale || {};
+    const win = doc.window || {};
+    const mins = (s) => Math.round((Number(s) || 0) / 60);
+    bar.title = "server-wide, sliding window — requests " + mins(win.request_s) +
+      "m / tokens " + mins(win.token_s) + "m";
+    // rate, token/s, model 순서로 한 행 — 값이 앞이라 눈이 숫자부터 읽는다
+    bar.innerHTML = rows.map((r) =>
+      '<span class="rateitem">' + rateNum(r.rpm, sc.request, "/m") +
+      rateNum(r.tpm, sc.token, "t/m") +
+      '<span class="ratem">' + esc(r.model) + "</span></span>").join("");
+    bar.hidden = false;
+  }
+
+  async function refreshRates() {
+    try {
+      const doc = await api("api/rates");
+      if (doc && doc.poll_seconds) state.ratePoll = Number(doc.poll_seconds) || state.ratePoll;
+      renderRates(doc);
+    } catch (e) { /* 지표를 못 가져와도 대화에는 영향이 없다 */ }
+  }
+
   // 숫자에 색을 입힌 조각. 숫자 자체가 라벨이므로 색은 보조 표시일 뿐이다.
   function scaled(text, color, title) {
     return '<span class="scaled" style="color:' + color + '"' +
@@ -2845,11 +2904,13 @@
         '<button class="iconbtn copymsg" data-mi="' + i + '" type="button" title="Copy full answer">' + ICON_COPY + "</button>";
     }
     // metadata(시각·모델·토큰)는 말풍선 밖 캡션으로. assistant는 markdown 렌더링
-    const body = role === "assistant" ? renderMarkdown(m.content) : esc(m.content);
+    // 실패 메시지는 그대로 보여준다 (markdown이 아니라 오류 문구다)
+    const body = (role === "assistant" && !m.failed) ? renderMarkdown(m.content) : esc(m.content);
     const who = senderLabel(m);
+    const failCls = m.failed ? " failed" : "";
     return '<div class="msgwrap ' + role + '" data-mi="' + i + '">' +
       (who ? '<div class="sender">' + esc(who) + "</div>" : "") +
-      '<div class="msg ' + role + '">' + body + "</div>" +
+      '<div class="msg ' + role + failCls + '">' + body + "</div>" +
       (cap ? '<div class="mcap">' + cap + "</div>" : "") + "</div>";
   }
 
@@ -2871,6 +2932,8 @@
         else wrap.insertAdjacentHTML("beforeend", html);
       };
       msg.classList.remove("clamped");
+      // 펼친 글은 길다 — 접기 버튼이 든 캡션 줄을 화면에 붙여 두어야 어디서든 접을 수 있다
+      wrap.classList.toggle("expanded", !!expanded[key]);
       if (expanded[key]) { put("collapse ▴"); return; }
       if (msg.scrollHeight > MSG_COLLAPSE_PX + 8) {
         msg.classList.add("clamped");
@@ -3347,12 +3410,8 @@
     resetInputHeight();
     const box = $("#chat-messages");
     if (!((state.chatDoc && state.chatDoc.messages) || []).length) box.innerHTML = "";
-    // 질문과 대기 표시를 한 줄로 — 아랫변을 맞춰 대화와 같은 쪽에 정렬
-    box.insertAdjacentHTML("beforeend",
-      '<div class="pendrow">' +
-      '<div class="msg pending" id="chat-pending"><span class="spin"></span> waiting for response ' +
-      timerHtml(Date.now()) + "</div>" +
-      '<div class="msgwrap user" id="chat-just-sent"><div class="msg user">' + esc(msg) + "</div></div></div>");
+    // 완료 상태와 같은 구조로 그린다 — 답변이 와도 자리가 움직이지 않는다
+    box.insertAdjacentHTML("beforeend", pendingTurnHtml(msg, Date.now(), null));
     // 방금 보낸 질문을 채팅창 상단에 앵커 — 질문과 그 아래 대기 타이머가 항상 보이게
     scrollMsgIntoTop(document.getElementById("chat-just-sent"));
     renderChatRequest(buildRequestPreview(msg, opts)); // 요청 전문은 전송 직후 즉시 표시
@@ -3370,6 +3429,16 @@
       }
       rekeyTx(sentChatId || "", r.id);   // 새 대화였다면 "" -> 새 id
       _lastChatId = r.id || "";
+      if (r.failed) {
+        // 실패: 질문과 실패 메시지가 서버에 저장됐다. 입력창으로 되돌리지 않는다.
+        if (state.chatId === sentChatId) {
+          state.scrollAnchor = "last-user";
+          await loadChatDoc(r.id);
+        }
+        refreshChats();
+        toast("Failed: " + (r.code ? "(" + r.code + ") " : "") + (r.message || ""));
+        return;
+      }
       if (r.stopped) {
         // 정지: 질문은 남고 답변 자리는 비어 있다. 입력창으로 되돌리지 않는다.
         if (state.chatId === sentChatId) {
@@ -3389,7 +3458,7 @@
     } catch (e) {
       if (state.chatId === sentChatId) {
         const p = document.getElementById("chat-pending");
-        if (p) (p.closest(".pendrow") || p).remove(); // 질문+대기 표시 한 줄 통째로 제거
+        removePendingTurn(); // 질문 줄과 답변 자리를 함께 제거
         input.value = msg; // 실패 시 입력 복원 (서버도 user 메시지를 저장하지 않음)
         autoGrowInput();
       }
@@ -3397,7 +3466,8 @@
         : "Send failed: " + (e.code ? "(" + e.code + ") " : "") + e.message);
     } finally {
       setTx(null, sentChatId || "");
-      setTx(null, lastChatId());   // 새 대화였다면 새로 받은 id 쪽도 함께 해제
+      setTx(null, lastChatId());
+      refreshRates();   // 방금 보낸 요청이 다음 주기를 기다리지 않고 바로 지표에 보이게   // 새 대화였다면 새로 받은 id 쪽도 함께 해제
       input.focus();
     }
   }
@@ -4046,9 +4116,11 @@
       el.textContent = sec + "s";
       el.style.color = latencyColor(sec);   // 기다리는 동안에도 색이 진해진다
     });
-    // 주기는 설정에서 온다 (llm.json의 poll_seconds, sso.json의 etc.poll_seconds)
+    // 주기는 설정에서 온다 (llm.json의 poll_seconds, sso.json의 etc.poll_seconds,
+    // server.json의 rate.poll_seconds). 아래 숫자는 첫 응답이 오기 전 한 번만 쓰인다.
     if (state.tick % (state.llmPoll || 30) === 0) refreshLlmStatus();
     if (state.tick % (state.ssoPoll || 30) === 0) refreshSsoStatus();
+    if (state.tick % (state.ratePoll || 5) === 0) refreshRates();
   }, 1000);
 
   // ---- 이벤트 ----

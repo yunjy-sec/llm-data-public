@@ -60,6 +60,7 @@ headers/api_key_env/timeout 등)와 시스템 프롬프트를 조회·편집·�
 |---|---|
 | `GET /api/health` | `{"app":"llm-data","ok":true,...}` — _global 헬스체크 marker |
 | `GET /api/llm/health` | 업스트림 llm-api 상태 요약 |
+| `GET /api/rates` | 모델별 요청·토큰 rate(서버 전체, 분당). 창 길이·주기·색 범위는 `config/server.json`의 `rate` |
 | `GET /api/schema` · `/api/examples` · `/api/models` · `/api/prompt` | 기본 스키마·예시·모델·프롬프트 |
 | `POST /api/jobs` | `{input_text, schema?, model?}` → 202 `{job_id, queue_position}` |
 | `GET /api/jobs?limit=N` · `GET /api/job?id=` | 이력 요약(steps 포함) · 잡 문서(steps·request·response·결과 포함) |
@@ -117,8 +118,10 @@ from/to 포함), 로그 탭에서 최신순으로 조회합니다 (`GET /api/dat
 
 **대화 탭**: ChatGPT/Claude식 다중 턴 대화 — 이력을 서버(`data/chats/CHAT-*.json`)에 저장하고
 매 턴 전체 메시지 배열을 LLM에 보내 컨텍스트를 유지합니다. 대화 선택 드롭다운·새 대화, 모델은
-상단 선택을 따름. 전송은 blocking(응답까지 대기 표시), 실패 시 user 메시지를 저장하지 않아
-재전송 가능. API: `GET /api/chats` · `/api/chat?id=`, `POST /api/chat/send {id?, message, model?}`.
+상단 선택을 따름. 전송은 blocking(응답까지 대기 표시)이고, **정지하면 질문만 남고 답변 자리가
+비며, 실패하면 그 자리에 실패 사유가 남습니다** — 어느 쪽이든 질문은 사라지지 않습니다.
+대화 영역 우측 위에는 서버 전체의 모델별 요청·토큰 rate가 겹쳐 표시됩니다(`GET /api/rates`).
+API: `GET /api/chats` · `/api/chat?id=`, `POST /api/chat/send {id?, message, model?}`.
 
 **스키마 형식**: 변환 목표·데이터셋·마스터가 모두 같은 형식을 씁니다.
 

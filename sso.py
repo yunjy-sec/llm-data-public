@@ -19,7 +19,7 @@ llm.json과 같은 방식이다. 주고받는 key와 value를 설정에 모두 �
     - etc:       timeout(초, 기본 3) 등. 전송되지 않는다.
 
   "verify" 2단계 — 서버가 그 토큰을 얹어 로그인 확인 endpoint로 POST한다.
-    - url:       예 http://12.23.31.72:8000/api/verify_sso
+    - url:       예 http://sso.example.com:8000/api/verify_sso
                  localhost가 아니라 적은 호스트로 그대로 나간다.
                  경로를 빼고 호스트만 적으면 /api/verify_sso를 붙인다.
     - header:    요청 헤더. 적은 이름과 값 그대로 전송된다(대소문자 보존).

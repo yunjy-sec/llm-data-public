@@ -6,6 +6,16 @@
   "config": "",
   "sso_config": "",
   "access_config": "",
+  "rate": {
+    "_설명": "채팅 화면 우측 위에 떠 있는 모델별 요청·토큰 지표. 두 창 모두 sliding window다.",
+    "request_window_s": 300,
+    "token_window_s": 600,
+    "poll_seconds": 5,
+    "keep": 20000,
+    "request_scale": { "_설명": "요청 rate 색 스케일 (분당 요청 수, log 매핑이라 min>0)", "min": 0.05, "max": 30 },
+    "token_scale": { "_설명": "토큰 rate 색 스케일 (분당 토큰)", "min": 50, "max": 20000 }
+  },
+
   "etc": {
     "설명": "python run_server.py 로 띄울 때 쓰는 값. 명령행 인자 > 환경변수 > 이 파일 > 기본값 순으로 찾는다.",
     "host": "바인드 주소. 기본 0.0.0.0 (다른 PC에서 접속 가능). 내 PC에서만 열려면 127.0.0.1.",
@@ -15,6 +25,12 @@
     "config": "llm.json 경로를 개별 지정할 때.",
     "sso_config": "sso.json 경로를 개별 지정할 때.",
     "access_config": "access.json 경로를 개별 지정할 때.",
+    "rate": "모델별 요청·토큰 지표. 서버 재기동 없이 이 파일만 고치면 반영된다.",
+    "rate.request_window_s": "요청 rate를 평균낼 창 길이(초). 값이 짧을수록 순간 부하에 민감하다.",
+    "rate.token_window_s": "토큰 rate를 평균낼 창 길이(초). 요청 창보다 길게 두어 추세를 본다. 표시는 분당 토큰이다.",
+    "rate.poll_seconds": "화면이 지표를 다시 물어보는 주기(초).",
+    "rate.keep": "모델당 기록 보관 상한. 요청이 폭주해도 메모리가 늘지 않게 하는 안전장치다.",
+    "rate.request_scale / token_scale": "숫자에 입히는 색의 범위. min에서 옅고 max에서 짙다.",
     "비워두면": "그 값은 설정하지 않고 넘어간다. 이미 환경변수가 있으면 환경변수를 그대로 쓴다."
   }
 }

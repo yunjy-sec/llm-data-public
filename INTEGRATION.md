@@ -43,6 +43,7 @@ python run_server.py
 | 프론트 | `web/sso.js` | 브라우저 SSO 클라이언트 (로컬 에이전트 웹소켓 → verify). 로그인 페이지가 쓴다 |
 | 프론트 | `web/denied.html` | 로그인 페이지. SSO를 먼저 시도하고, 막히면 임시 접속 폼을 보여준다 |
 | 백엔드 | `sso.py` | **로그인 id 조회 전부** — 실패해도 guest로만 떨어지고 다른 기능에 영향이 없다 |
+| 백엔드 | `rates.py` | **모델별 요청·토큰 rate 집계 전부** — 다른 모듈을 import하지 않아 그대로 떼어 쓸 수 있다 |
 | 백엔드 | `llm.py` | **LLM 접점 전부** — endpoint 조립(`chat_url`)·헤더(`_headers`)·요청/파싱(`chat_messages`)·설정 로드·저장. 접목 시 여기만 고친다 |
 | 프론트 | `web/index.html` | 탭·패널 구조와 요소 id |
 | 프론트 | `web/app.js` | 모든 화면 로직 (변환·데이터셋·마스터·대화·라우팅). 빌드 없는 순수 JS |
@@ -51,7 +52,7 @@ python run_server.py
 | 설정 | `config/llm.json.example` | 설정 키 예시 — 복사해 `llm.json`으로 쓴다 (실제 파일은 커밋 금지) |
 | 설정 | `config/sso.json.example` | 로그인 id 조회 설정 예시 — 복사해 `sso.json`으로 쓴다 (선택) |
 | 설정 | `config/access.json.example` | 접근 제어 설정 예시 — 복사해 `access.json`으로 쓴다 (선택) |
-| 설정 | `config/server.json.example` | 실행 설정 예시 (host port 저장 경로) — 복사해 `server.json`으로 쓴다 (선택) |
+| 설정 | `config/server.json.example` | 실행 설정 예시 (host port 저장 경로, `rate` 블록) — 복사해 `server.json`으로 쓴다 (선택) |
 | 프롬프트 | `prompts/table_to_schema.md` | 변환 시스템 프롬프트. `{{TARGET_SCHEMA}}` 자리에 목표 스키마가 치환된다 |
 
 ## 경로 설정 방법
@@ -266,7 +267,7 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
     "etc": { "timeout": 3 }
   },
   "verify": {
-    "url": "http://12.23.31.72:8000/api/verify_sso",
+    "url": "http://sso.example.com:8000/api/verify_sso",
     "header": { "Content-Type": "application/json", "Accept": "application/json" },
     "body": { "token": { "json": { "userInfo": "{userInfo}", "key": "{key}" } } },
     "response": {

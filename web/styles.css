@@ -209,7 +209,7 @@ body.chatfull #chat-panel { height: calc(var(--vvh, 100dvh) - var(--headh, 62px)
 body.chatfull .chatinput { flex: 0 0 auto; }
 body.chatfull .chatlayout { flex: 1; min-height: 0; min-width: 0; gap: 0; }
 body.chatfull #chat-messages { min-width: 0; }
-body.chatfull .chatside { flex: 0 0 268px; border-right: 1px solid var(--line); background: var(--bg); padding: 8px; overflow-y: auto; gap: 6px; }
+body.chatfull .chatside { flex: 0 0 368px;border-right: 1px solid var(--line); background: var(--bg); padding: 8px; overflow-y: auto; gap: 6px; }
 /* 좌우 여백 — ChatGPT처럼 대화가 영역 가장자리에 붙지 않게 하고, 아래도 살짝 띄운다.
    넓은 화면에서는 읽기 폭을 제한해 한 줄이 지나치게 길어지지 않게 한다. */
 body.chatfull .chatmain { min-height: 0; padding: 8px 0 18px; position: relative; }
@@ -230,6 +230,18 @@ body.chatfull .sidemeta { font-size: 10.5px; color: var(--muted); padding: 2px 2
 body.chatfull #tabs { display: flex; flex-direction: column; gap: 2px; padding: 0 0 6px; margin: 0; border: none; overflow: visible; }
 body.chatfull #tabs .tab { width: 100%; text-align: left; font-size: 11px; padding: 3px 8px; border-radius: 6px; }
 body.chatfull #tabs .tabdesc { display: none; }
+/* 서버 전체 요청 지표 — 모델 드롭다운 아래, 대화 위에 글자만 겹쳐 띄운다.
+   자리를 차지하지 않아야 대화 레이아웃이 이것 때문에 움직이지 않는다. */
+/* right는 헤더 좌우 여백(14px)과 같다 — 바로 위 모델 드롭다운과 오른쪽 끝을 맞춘다 */
+.ratebar { position: absolute; top: 2px; right: 14px; z-index: 4; pointer-events: none;
+  display: flex; align-items: center; gap: 12px; max-width: 62%;
+  font-size: 10px; line-height: 1.4; white-space: nowrap; overflow: hidden; }
+.rateitem { display: inline-flex; align-items: baseline; gap: 2px; pointer-events: auto; }
+.ratev { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--muted); }
+.rateu { color: var(--muted); opacity: .75; margin-right: 6px; }
+.ratem { color: var(--muted); opacity: .85; }
+@media (max-width: 900px) { .ratebar { right: 12px; max-width: 74%; } }
+
 /* 스크롤 점프 버튼 — 대화창 하단 중앙에 작게 겹침 (bottom은 JS가 입력창 위로 맞춘다) */
 .scrolljump { position: absolute; left: 50%; transform: translateX(-50%); bottom: 120px;
   display: flex; flex-direction: row; gap: 4px; z-index: 4; }
@@ -327,9 +339,12 @@ pre.raw.wrap { white-space: pre-wrap; word-break: break-all; }
 .msg.user { background: var(--accent); color: #fff; border-bottom-right-radius: 3px; }
 .msg.assistant { background: var(--bg); border: 1px solid var(--line); border-bottom-left-radius: 3px; }
 /* 응답 대기 표시는 채팅창 하단에 sticky로 항상 보이게 — 긴 질문에 밀려 잘리지 않는다 */
-/* 대기 표시는 대화 흐름에 그대로 둔다 — 화면에 붙어 따라다니면 스크롤로 위를 볼 때
-   질문이 이전 대화를 덮어 읽기를 방해한다 */
-.msg.pending { align-self: flex-start; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 4px 9px; font-size: 12px; background: var(--card); flex-shrink: 0; }
+/* 대기 표시는 답변이 들어설 자리에 그대로 둔다 — 답변이 와도 레이아웃이 움직이지 않는다.
+   화면에 붙여 따라다니게 하면 스크롤로 위를 볼 때 이전 대화를 덮어 읽기를 방해한다 */
+.msg.pending { color: var(--muted); border: 1px dashed var(--line); border-radius: 8px;
+  padding: 6px 10px; font-size: 12px; background: var(--card); }
+/* 실패한 답변은 한눈에 구분되게 (정지는 답변 자체가 없다) */
+.msg.assistant.failed { border: 1px solid var(--err); background: var(--err-weak); color: var(--err); }
 /* 캡션 항목은 모두 같은 높이 기준으로 정렬하고, 구분은 가운데 점 대신 간격으로 */
 .mcap { font-size: 10px; color: var(--muted); margin: 1px 4px 0; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; line-height: 1.6; }
 .mcap > * { display: inline-flex; align-items: center; line-height: 1.6; }
@@ -344,6 +359,11 @@ pre.raw.wrap { white-space: pre-wrap; word-break: break-all; }
 .mcap .mtoggleslot { margin: 0; }
 .mcap svg { width: 12px; height: 12px; display: block; }
 .mcap .bstep:hover, .mcap .iconbtn:hover, .mcap .msgtoggle:hover { color: var(--accent); }
+/* 펼친 글은 한 화면을 넘긴다. 접기 버튼이 든 캡션 줄을 아래에 붙여 두어, 끝까지
+   스크롤하지 않고도 그 자리에서 다시 접을 수 있게 한다. */
+.msgwrap.expanded > .mcap { position: sticky; bottom: 0; z-index: 3;
+  background: var(--bg); padding: 3px 4px; margin: 1px 0 0; border-radius: 7px; }
+.msgwrap.expanded > .mcap .msgtoggle { background: var(--card); }
 .iconbtn { border: 1px solid transparent; background: none; cursor: pointer; color: var(--muted); padding: 1px 3px; border-radius: 5px; display: inline-flex; align-items: center; }
 .iconbtn:hover { color: var(--accent); border-color: var(--line); }
 .bnav { display: inline-flex; align-items: center; gap: 2px; color: var(--muted); font-size: 10px; }
@@ -352,12 +372,6 @@ pre.raw.wrap { white-space: pre-wrap; word-break: break-all; }
 .msgedit { width: 100%; background: var(--bg); border: 1px solid var(--accent); border-radius: 10px; padding: 8px; box-sizing: border-box; }
 .msgedit textarea { width: 100%; min-height: 56px; margin: 0; border: none; background: transparent; font-size: 12.5px; padding: 0; resize: vertical; box-sizing: border-box; color: var(--fg); font-family: inherit; }
 .msgedit textarea:focus { outline: none; }
-/* 질문 말풍선 + 대기 표시 한 줄 — 아랫변 기준 정렬, 대화와 같은 쪽(우측) */
-.pendrow { display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px; }
-.pendrow .msgwrap { max-width: 72%; }
-.pendrow .msg.pending { position: static; align-self: flex-end; margin: 0; flex: 0 0 auto; }
-/* 수정 재전송도 그 대화 위치에 그대로 둔다 */
-.pendrow.atpos { position: static; }
 /* 목록 끝 여백: 어떤 질문이든 화면 맨 위까지 스크롤할 수 있게 한다 */
 .msgspacer { flex: 0 0 auto; pointer-events: none; }
 /* 새 분기로 곧 교체될 이후 메시지 */

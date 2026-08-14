@@ -22,7 +22,7 @@
     }
   },
   "verify": {
-    "url": "http://12.23.31.72:8000/api/verify_sso",
+    "url": "http://sso.example.com:8000/api/verify_sso",
     "header": {
       "Content-Type": "application/json",
       "Accept": "application/json"
