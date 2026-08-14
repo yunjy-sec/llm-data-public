@@ -225,29 +225,51 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
 취소(`/cancel`)와 상태 조회(`/api/health`)에 쓰는 API 루트도 같은 기준으로 계산되므로,
 `api_base_url`만 지정해도 취소·상태 표시가 올바른 곳을 향한다.
 
-## SSO 로그인 id (선택)
+## SSO 로그인 확인 (선택)
 
-로그인 사용자를 표시하는 기능은 `sso.py` 하나에 모여 있고 **기존 기능과 완전히 분리**되어 있다.
-어떤 이유로 실패하든 id만 `guest`로 표시되고 변환·대화는 그대로 동작한다.
-설정 파일이 없으면 SSO를 아예 시도하지 않는다.
+로그인 사용자를 표시하는 기능은 `sso.py`와 `web/app.js`의 SSO 구간에 모여 있고
+**기존 기능과 완전히 분리**되어 있다. 어떤 이유로 실패하든 id만 `guest`로 표시되고
+변환·대화는 그대로 동작한다. 설정 파일이 없으면 아예 시도하지 않는다.
 
-설정은 `config/sso.json`이며 `llm.json`과 같은 방식이다 (url·header가 요청을 결정하고 etc는 전송되지 않는다).
+두 단계로 동작한다. 주고받는 key와 value를 `config/sso.json`에 모두 적는다.
+
+| 단계 | 누가 | 하는 일 |
+|---|---|---|
+| 1 `local` | **브라우저** | 사용자 PC의 로컬 에이전트에 웹소켓으로 붙어 토큰을 받는다 |
+| 2 `verify` | **서버** | 그 토큰을 얹어 `verify_sso`로 POST하고 로그인 정보를 꺼낸다 |
+
+1단계를 브라우저가 하는 이유는 `localhost`가 **서버가 아니라 사용자 PC**이기 때문이다.
+서버에서 `ws://localhost`로 붙으면 서버 자신에게 붙는 것이라 의미가 없다.
+`local.url`을 비우면 1단계를 건너뛰고 쿠키만 넘겨 확인한다.
 
 ```json
 {
-  "url": "http://12.23.31.72:8000/api/me",
-  "header": { "Accept": "application/json" },
-  "id_field": "data.EP_LOGINID",
-  "name_field": "data.EP_USERNAME",
-  "dept_field": "data.EP_DEPTNAME",
-  "etc": { "forward_headers": ["Cookie", "Authorization"], "timeout": 3, "cache_seconds": 60 }
+  "local": {
+    "url": "ws://localhost:8080/sso",
+    "request": { "cmd": "getUserInfo" },
+    "response": { "token": "data.token" },
+    "etc": { "timeout": 3 }
+  },
+  "verify": {
+    "url": "http://12.23.31.72:8000/api/verify_sso",
+    "header": { "Accept": "application/json", "Content-Type": "application/json" },
+    "body": { "token": "{token}" },
+    "response": {
+      "id": "data.EP_LOGINID",
+      "name": "data.EP_USERNAME",
+      "dept": "data.EP_DEPTNAME"
+    },
+    "etc": { "method": "POST", "timeout": 3, "forward_headers": ["Cookie", "Authorization"] }
+  },
+  "etc": { "cache_seconds": 60, "health_seconds": 10 }
 }
 ```
 
-- `url`은 적은 주소로 그대로 나간다. **localhost가 아니라 그 호스트**다.
-- `forward_headers`에 적힌 헤더(기본 `Cookie`, `Authorization`)를 브라우저 요청에서 그대로 넘긴다.
-  세션 쿠키가 넘어가야 누가 로그인했는지 알 수 있다.
-- 필드 경로는 점으로 중첩을 표현하고 배열로 여러 후보를 줄 수 있다. 미지정 시 위 세 경로가 기본값이다.
+- `local.request` — 에이전트로 보낼 메시지. 객체면 JSON 문자열로 보내고, 비우면 받기만 한다.
+- `local.response` — 받은 메시지에서 값을 꺼낼 경로. `""`로 두면 받은 메시지 전체를 토큰으로 쓴다.
+- `verify.body` — 실을 key와 value를 그대로 적는다. 값의 `{token}`이 1단계 토큰으로 치환된다.
+- `verify.response` — 응답에서 id·이름·부서를 꺼낼 경로.
+- `verify.url` — 적은 호스트로 그대로 나간다. 경로를 빼고 호스트만 적으면 `/api/verify_sso`를 붙인다.
 - 프록시가 헤더로 직접 넣어 주는 환경이면 `X-SSO-User`가 우선한다 (SSO 조회 없이 그 값을 쓴다).
 
 화면 표시 (id 왼쪽 LED)
@@ -255,12 +277,28 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
 | 상태 | LED | 표시 |
 |---|---|---|
 | id를 가져옴 | 초록 | id 이름 부서 |
-| 통신은 됐지만 응답에서 값을 못 찾음 | 주황 | `guest` (브라우저 콘솔에 응답 일부 출력) |
+| 통신은 됐지만 응답에서 값을 못 찾음 | 주황 | `guest` (콘솔에 응답 일부 출력) |
 | 서비스 응답 없음 (DNS·거부·타임아웃) | 빨강 | `guest` |
 | 설정 없음 | 없음 | `guest` |
 
-조회 결과는 세션 단위로 `cache_seconds`(기본 60초) 캐시하고, 화면은 15초마다 갱신한다.
-토큰·쿠키가 담기는 `config/sso.json`은 `llm.json`과 함께 커밋 대상이 아니다 (PERSIST 볼륨에 둔다).
+로그는 두 곳에 남는다. 서버 터미널의 `[SSO]` 줄과 브라우저 콘솔의 `[sso]` 줄이며,
+1단계 연결·전송·수신과 2단계 요청·응답·판정이 모두 찍힌다.
+자격 정보(Cookie·Authorization·token)는 값 대신 길이만 표시된다.
+
+```
+[SSO] 확인 시작 http://…/api/verify_sso | token 있음(12자) | 헤더 Accept=…, Cookie=****(15자) | body {"token": "****(12자)"}
+[SSO] POST http://…/api/verify_sso -> 200 (1ms, 139B)
+[SSO] 로그인 확인 id=yunjy.sec name=… dept=…
+```
+
+확인 결과는 세션 단위로 `cache_seconds`(기본 60초) 캐시한다. 화면은 15초마다 갱신하되
+이미 로그인된 상태면 **TCP 연결 확인만** 한다 — 빈 토큰으로 `verify_sso`를 다시 두드리면
+상대 서버 로그에 실패가 쌓이기 때문이다.
+
+관련 API: `GET /api/sso/config`(1단계 설정), `POST /api/sso/verify`(토큰으로 2단계),
+`GET /api/whoami`(토큰 없이 확인), `GET /api/sso/health`(생사).
+
+자격 정보가 담기는 `config/sso.json`은 `llm.json`과 함께 커밋 대상이 아니다 (PERSIST 볼륨에 둔다).
 
 ## 코드 수정이 필요한 경우
 

@@ -1,23 +1,54 @@
 {
-  "url": "http://12.23.31.72:8000/api/me",
-  "header": {
-    "Accept": "application/json"
+  "local": {
+    "url": "ws://localhost:8080/sso",
+    "request": {
+      "cmd": "getUserInfo"
+    },
+    "response": {
+      "token": "data.token"
+    },
+    "etc": {
+      "설명": "1단계. 브라우저가 사용자 PC의 로컬 에이전트에 웹소켓으로 붙어 토큰을 받는다.",
+      "url": "여기서 localhost는 서버가 아니라 사용자 PC다. 그래서 이 단계는 브라우저만 할 수 있다.",
+      "request": "에이전트로 보낼 메시지. 객체면 JSON 문자열로 보낸다. 비우면 보내지 않고 받기만 한다.",
+      "response": "받은 메시지에서 값을 꺼낼 경로. 점으로 중첩을 표현한다. \"\"로 두면 받은 메시지 전체를 그 값으로 쓴다.",
+      "timeout": 3,
+      "url을 비우면": "1단계를 건너뛰고 2단계만 수행한다 (쿠키를 그대로 넘겨 확인하는 구성)."
+    }
   },
-  "id_field": "data.EP_LOGINID",
-  "name_field": "data.EP_USERNAME",
-  "dept_field": "data.EP_DEPTNAME",
+  "verify": {
+    "url": "http://12.23.31.72:8000/api/verify_sso",
+    "header": {
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "token": "{token}"
+    },
+    "response": {
+      "id": "data.EP_LOGINID",
+      "name": "data.EP_USERNAME",
+      "dept": "data.EP_DEPTNAME"
+    },
+    "etc": {
+      "설명": "2단계. 서버가 1단계 토큰을 얹어 로그인 확인 endpoint로 POST한다.",
+      "url": "적은 호스트로 그대로 나간다. localhost가 아니다. 경로를 빼고 호스트만 적으면 /api/verify_sso를 붙인다.",
+      "body": "요청 본문에 실을 key와 value를 그대로 적는다. 값의 \"{token}\"은 1단계에서 받은 토큰으로 치환된다.",
+      "response": "응답에서 값을 꺼낼 경로. id를 못 찾으면 guest로 남고 주황 LED가 켜진다.",
+      "method": "POST",
+      "method 설명": "405가 오면 다른 메서드로 한 번 재시도하고 로그를 남긴다.",
+      "forward_headers": ["Cookie", "Authorization"],
+      "forward_headers 설명": "브라우저 요청의 이 헤더들을 2단계 요청에 그대로 옮겨 담는다.",
+      "timeout": 3
+    }
+  },
   "etc": {
-    "설명": "로그인 id 조회 설정. url과 header가 요청을 그대로 결정하고 etc는 전송되지 않는다.",
-    "url": "8000 포트를 서빙하는 호스트를 그대로 적는다. localhost가 아니다.",
-    "필드": "응답 JSON에서 값을 꺼낼 경로. 점으로 중첩을 표현하고, 배열로 여러 후보를 줄 수 있다.",
-    "forward_headers": ["Cookie", "Authorization"],
-    "forward_headers 설명": "브라우저 요청의 이 헤더들을 그대로 넘긴다. 세션 쿠키가 넘어가야 누가 로그인했는지 알 수 있다.",
-    "method": "GET",
-    "timeout": 3,
-    "cache_seconds": 60,
-    "health_seconds": 10,
-    "LED": "초록 = id를 가져옴 / 주황 = 통신은 됐지만 응답에서 값을 못 찾음 (브라우저 콘솔에 응답 일부 출력) / 빨강 = 서비스 응답 없음",
+    "흐름": "브라우저가 local.url에 붙어 local.request를 보내고 local.response.token을 꺼낸다 → 서버가 그 토큰을 verify.body의 {token} 자리에 넣어 verify.url로 POST한다 → verify.response 경로로 id 이름 부서를 꺼낸다.",
+    "LED": "초록 = id를 가져옴 / 주황 = 통신은 됐지만 응답에서 값을 못 찾음 / 빨강 = 서비스 응답 없음",
+    "로그": "각 단계가 서버 터미널에 [SSO] 접두어로, 같은 내용이 브라우저 console에도 남는다. 자격 정보 헤더는 값 대신 길이만 표시된다.",
     "실패 시": "어떤 이유로 실패하든 id는 guest로 유지되고 다른 기능은 그대로 동작한다.",
-    "설정 없을 때": "이 파일이 없거나 url이 비어 있으면 SSO를 아예 시도하지 않고 LED도 켜지 않는다."
+    "설정 없을 때": "이 파일이 없거나 verify.url이 비어 있으면 SSO를 아예 시도하지 않고 LED도 켜지 않는다.",
+    "cache_seconds": 60,
+    "health_seconds": 10
   }
 }

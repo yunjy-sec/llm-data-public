@@ -174,11 +174,9 @@
         $("#schema").value = JSON.stringify(schema, null, 2);
       }
       loadSettings();
-      api("api/whoami").then((w) => {
-        state.user = w.id || "guest";
-        $("#login-id").textContent = state.user;
-        applySsoState(w);
-      }).catch(() => {});
+      // SSO: 1단계(로컬 에이전트 웹소켓)를 먼저 시도하고, 없거나 실패하면 쿠키만으로 확인한다.
+      // 어느 쪽이 실패하든 id는 guest로 남고 나머지 기능은 그대로 동작한다.
+      ssoSignIn().then((w) => w || api("api/whoami")).then(applySsoUser).catch(() => {});
       (jobs.jobs || []).slice().reverse().forEach((j) => upsertJob({
         id: j.id, mode: j.mode || "fill", state: j.state, model: j.model, preview: j.input_preview,
         created_ms: Date.parse(j.created_at || "") || Date.now(),
@@ -3585,12 +3583,17 @@
       : nofield ? "Could not find sign-in fields in the SSO response " + (s.error || "")
       : ok ? "SSO " + (s.id || "") + [s.name, s.dept].filter(Boolean).map((x) => " " + x).join("")
       : "";
-    if (nofield && !state.ssoWarned) {
-      state.ssoWarned = true; // 5초마다 같은 줄을 반복해서 찍지 않는다
-      console.log("[sso] request succeeded but no sign-in fields were found in the response.",
-        { url: s.url, error: s.error, response: s.response });
+    // 조회 결과가 바뀔 때마다 콘솔에 남긴다 (같은 상태를 반복해서 찍지는 않는다).
+    // 서버 터미널에도 같은 내용이 [SSO] 접두어로 남는다.
+    const sig = [s.service, s.source, s.status, s.error].join("|");
+    if (sig !== state.ssoSig) {
+      state.ssoSig = sig;
+      console.log("[sso] " + (ok ? "signed in" : down ? "service not responding" : "no sign-in fields"), {
+        url: s.url, status: s.status, service: s.service, source: s.source,
+        id: s.id, name: s.name, dept: s.dept,
+        method_used: s.method_used, error: s.error, response: s.response,
+      });
     }
-    if (!nofield) state.ssoWarned = false;
     const meta = document.getElementById("login-meta");
     if (meta) {
       const parts = [s.name, s.dept].filter(Boolean);
@@ -3599,13 +3602,103 @@
     }
   }
 
+  // 1단계: 사용자 PC의 로컬 에이전트에 웹소켓으로 붙어 토큰을 받는다.
+  // 여기서 localhost는 서버가 아니라 이 브라우저가 도는 PC라서 이 단계는 브라우저만 할 수 있다.
+  // 설정(config/sso.json의 local)에 적힌 url·request·response 그대로 동작한다.
+  function ssoLocalToken(local) {
+    return new Promise((resolve) => {
+      const url = (local || {}).url;
+      if (!url) return resolve({ skipped: true });
+      let ws, done = false;
+      const finish = (out) => {
+        if (done) return;
+        done = true;
+        try { if (ws) ws.close(); } catch (e) { /* 이미 닫힘 */ }
+        console.log("[sso] local agent " + url, out);
+        resolve(out);
+      };
+      const timer = setTimeout(() => finish({ error: "timeout " + local.timeout + "s" }),
+        Math.max(1, Number(local.timeout) || 3) * 1000);
+      try {
+        ws = new WebSocket(url);
+      } catch (e) {
+        clearTimeout(timer);
+        return finish({ error: String(e) });
+      }
+      ws.onopen = () => {
+        console.log("[sso] local agent connected " + url);
+        const req = local.request;
+        if (req !== undefined && req !== null && req !== "") {
+          const msg = typeof req === "string" ? req : JSON.stringify(req);
+          console.log("[sso] local agent send", msg);
+          ws.send(msg);
+        }
+      };
+      ws.onmessage = (ev) => {
+        clearTimeout(timer);
+        let doc = ev.data;
+        try { doc = JSON.parse(ev.data); } catch (e) { /* 문자열 그대로 쓴다 */ }
+        const path = ((local.response || {}).token) || "";
+        const token = pickPath(doc, path);
+        finish(token ? { token: token, raw: doc } : { error: "no token at \"" + path + "\"", raw: doc });
+      };
+      ws.onerror = () => { clearTimeout(timer); finish({ error: "websocket error " + url }); };
+      ws.onclose = (ev) => {
+        if (!done) { clearTimeout(timer); finish({ error: "closed before message (code " + ev.code + ")" }); }
+      };
+    });
+  }
+
+  // 점으로 이어진 경로로 값 꺼내기 (경로가 ""면 값 자체). 서버의 _pick과 같은 규칙이다.
+  function pickPath(obj, path) {
+    let cur = obj;
+    if (String(path) !== "") {
+      for (const part of String(path).split(".")) {
+        if (cur === null || cur === undefined) return null;
+        cur = cur[Array.isArray(cur) ? Number(part) : part];
+      }
+    }
+    return (typeof cur === "string" || typeof cur === "number") && String(cur).trim() ? String(cur).trim() : null;
+  }
+
+  // 1단계 토큰을 서버로 넘겨 2단계(verify_sso) 확인까지 마친다. 실패해도 guest로만 남는다.
+  async function ssoSignIn() {
+    try {
+      const cfg = await api("api/sso/config");
+      if (!cfg.configured) return null;               // 설정 없음 — SSO를 시도하지 않는다
+      if (!(cfg.local || {}).url) return null;        // 1단계 없음 — 쿠키만으로 확인하는 구성
+      const got = await ssoLocalToken(cfg.local);
+      if (!got || !got.token) {
+        console.log("[sso] no token from local agent, staying as guest", got);
+        return null;
+      }
+      return await apiPost("api/sso/verify", { token: got.token });
+    } catch (e) {
+      console.log("[sso] sign-in failed, staying as guest", String(e));
+      return null;
+    }
+  }
+
+  // 주기 갱신. 이미 로그인된 상태면 서비스 생사만 확인한다 —
+  // 여기서 whoami를 토큰 없이 다시 부르면 1단계를 건너뛴 확인이 되어 로그인을 잃는다.
   async function refreshSsoStatus() {
     try {
-      const w = await api("api/whoami"); // id·이름·부서와 상태를 한 번에 갱신
-      state.user = w.id || "guest";
-      $("#login-id").textContent = state.user;
-      applySsoState(w);
+      if (state.ssoUser) {
+        const h = await api("api/sso/health");
+        applySsoState(Object.assign({}, state.ssoUser, { service: h.service, error: h.error }));
+        return;
+      }
+      const w = await ssoSignIn() || await api("api/whoami");
+      applySsoUser(w);
     } catch (e) { /* SSO 확인 실패는 다른 기능에 영향 주지 않는다 */ }
+  }
+
+  // 확인 결과를 화면과 state에 반영. source가 sso/header일 때만 로그인으로 본다.
+  function applySsoUser(w) {
+    state.ssoUser = (w && (w.source === "sso" || w.source === "header")) ? w : null;
+    state.user = (w && w.id) || "guest";
+    $("#login-id").textContent = state.user;
+    applySsoState(w);
   }
 
   // ---- 1초 tick: 경과 타이머 갱신 + 5초마다 LLM 상태 ----

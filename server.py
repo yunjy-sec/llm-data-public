@@ -879,6 +879,12 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:  # sso 모듈 문제로 화면이 막히지 않게 한다
                     return self._json({"id": "guest", "source": "none", "service": "down",
                                        "error": "%s: %s" % (type(e).__name__, e)})
+            if path == "/api/sso/config":
+                # 1단계(로컬 에이전트 웹소켓)를 브라우저가 수행하는 데 필요한 정보만 — 자격 정보는 없다
+                try:
+                    return self._json(sso.public_config())
+                except Exception as e:
+                    return self._json({"configured": False, "error": "%s: %s" % (type(e).__name__, e)})
             if path == "/api/sso/health":
                 try:
                     return self._json(sso.health())
@@ -1066,6 +1072,15 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/apps/llm-data"):
             path = path[len("/apps/llm-data"):] or "/"
         try:
+            if path == "/api/sso/verify":
+                # 1단계에서 브라우저가 받은 토큰으로 2단계(verify_sso) 확인.
+                # 실패해도 guest를 돌려줄 뿐 다른 기능에 영향이 없다.
+                body = self._body() or {}
+                try:
+                    return self._json(sso.whoami(self.headers, body.get("token")))
+                except Exception as e:
+                    return self._json({"id": "guest", "source": "none", "service": "down",
+                                       "error": "%s: %s" % (type(e).__name__, e)})
             if path == "/api/jobs":
                 return self._create_job()
             if path == "/api/cancel":

@@ -1,36 +1,49 @@
-"""SSO 로그인 id 조회 (stdlib only).
+"""SSO 로그인 확인 (stdlib only).
 
 기존 기능과 완전히 분리된 모듈이다. 이 파일이 무슨 이유로 실패하든 앱은 그대로 동작하고
-로그인 id만 guest로 표시된다. 서버 코드에서 이 모듈을 부르는 곳은 /api/whoami 하나뿐이다.
+로그인 id만 guest로 표시된다. 서버에서 이 모듈을 부르는 곳은 /api/whoami 와 /api/sso/* 뿐이다.
 
 설정: config/sso.json (env LLM_DATA_SSO_CONFIG로 경로 재지정 가능)
-llm.json과 같은 방식이다. url/header가 요청을 그대로 결정하고 etc는 전송되지 않는다.
+llm.json과 같은 방식이다. 주고받는 key와 value를 설정에 모두 적고, etc는 전송되지 않는다.
 
-- url:      로그인 사용자 조회 endpoint (예: http://12.23.31.72:8000/api/me)
-            localhost가 아니라 그 호스트로 나간다 — 적은 주소 그대로 쓴다.
-- header:   요청 헤더. 적은 이름과 값 그대로 전송된다(대소문자 보존).
-- id_field / name_field / dept_field:
-            응답 JSON에서 값을 꺼낼 경로. 점으로 중첩을 표현한다 (예: "data.EP_LOGINID").
-            여러 후보를 배열로 줄 수 있고 먼저 값이 있는 것을 쓴다.
-            기본값은 data.EP_LOGINID / data.EP_USERNAME / data.EP_DEPTNAME 이다.
-- etc:      전송되지 않는 자유 영역. 아래 값을 넣으면 그대로 동작한다.
-  - forward_headers: 브라우저 요청의 어떤 헤더를 SSO 서버로 그대로 넘길지 (기본 Cookie,
-                     Authorization). 세션 쿠키를 넘겨야 누가 로그인했는지 알 수 있다.
-  - timeout:         조회 대기 (초, 기본 3)
-  - cache_seconds:   같은 세션의 조회 결과를 캐시할 시간 (초, 기본 60)
-  - health_seconds:  서비스 생사 판정을 캐시할 시간 (초, 기본 10)
+구조는 두 단계다.
+
+  "local"  1단계 — 브라우저가 사용자 PC의 로컬 에이전트에 웹소켓으로 붙어 토큰을 받는다.
+           여기서 localhost는 서버가 아니라 사용자 PC이므로 브라우저만 할 수 있다.
+    - url:       ws://localhost:<포트>/<경로>
+    - request:   에이전트로 보낼 메시지. 객체면 JSON으로, 문자열이면 그대로 보낸다.
+                 비우면 보내지 않고 받기만 한다.
+    - response:  받은 메시지에서 값을 꺼낼 경로. {"token": "data.token"} 처럼 적는다.
+                 경로 대신 ""를 적으면 받은 메시지 전체를 그 값으로 쓴다.
+    - etc:       timeout(초, 기본 3) 등. 전송되지 않는다.
+
+  "verify" 2단계 — 서버가 그 토큰을 얹어 로그인 확인 endpoint로 POST한다.
+    - url:       예 http://12.23.31.72:8000/api/verify_sso
+                 localhost가 아니라 적은 호스트로 그대로 나간다.
+                 경로를 빼고 호스트만 적으면 /api/verify_sso를 붙인다.
+    - header:    요청 헤더. 적은 이름과 값 그대로 전송된다(대소문자 보존).
+    - body:      요청 본문. 값에 "{token}"을 쓰면 1단계에서 받은 토큰으로 치환된다.
+    - response:  응답에서 값을 꺼낼 경로. {"id": ..., "name": ..., "dept": ...}
+    - etc:       method(기본 POST) timeout forward_headers 등. 전송되지 않는다.
+
+1단계 설정이 없으면 2단계만 수행한다 (쿠키를 그대로 넘겨 확인하는 구성).
+forward_headers(기본 Cookie, Authorization)에 적힌 헤더는 브라우저 요청에서 그대로 넘긴다.
 
 service 상태 (화면 LED 판단용)
   - "up":           서버가 HTTP 응답을 준 경우 (401 등도 서버는 살아 있다)
   - "down":         연결 자체가 안 됨 (DNS·거부·타임아웃) — id 왼쪽에 빨간 LED
-  - "unconfigured": 설정 파일이 없거나 url이 비어 있음 — LED 없이 그냥 guest
-id를 실제로 가져오면(source=sso) 화면에 초록 LED와 id 이름 부서가 함께 표시된다.
+  - "unconfigured": 설정 파일이 없거나 verify.url이 비어 있음 — LED 없이 그냥 guest
+id를 실제로 가져오면 초록 LED와 함께 id 이름 부서가 표시된다.
+
+조회 과정은 서버 터미널에 [SSO] 접두어로 남고, 같은 내용이 브라우저 console에도 찍힌다.
+자격 정보가 담긴 헤더(Cookie·Authorization 등)는 로그에서 값 대신 길이만 표시된다.
 """
 
 import hashlib
 import http.client
 import json
 import os
+import socket
 import threading
 import time
 from urllib.parse import urlsplit
@@ -42,12 +55,25 @@ CONFIG_PATH = (os.environ.get("LLM_DATA_SSO_CONFIG")
                or (os.path.join(_PERSIST, "config", "sso.json") if _PERSIST else CONFIG_DEFAULT_PATH))
 
 MAX_BYTES = 256 * 1024
-DEFAULT_FORWARD = ("Cookie", "Authorization")
 GUEST = "guest"
 
+# 경로를 적지 않았을 때 붙이는 확인 endpoint
+VERIFY_PATH = "/api/verify_sso"
+DEFAULT_METHOD = "POST"          # 이 endpoint는 POST를 받는다
+DEFAULT_FORWARD = ("Cookie", "Authorization")
+DEFAULT_RESPONSE = {"id": "data.EP_LOGINID", "name": "data.EP_USERNAME", "dept": "data.EP_DEPTNAME"}
+
 _LOCK = threading.Lock()
-_CACHE = {}       # 세션키 -> (만료시각, 결과)
-_HEALTH = [0.0, None]  # [만료시각, service 문자열]
+_CACHE = {}            # 세션키 -> (만료시각, 결과)
+_HEALTH = [0.0, None]  # [만료시각, service]
+
+
+def _log(msg):
+    """터미널(서버 stdout) 로그. llm.py의 [LLM] 로그와 같은 자리에서 보인다."""
+    try:
+        print("[SSO] %s" % msg, flush=True)
+    except Exception:
+        pass
 
 
 def load_config():
@@ -56,16 +82,24 @@ def load_config():
             with open(p, encoding="utf-8") as f:
                 cfg = json.load(f)
             return cfg if isinstance(cfg, dict) else {}
-        except (OSError, ValueError):
+        except OSError:
             continue
+        except ValueError as e:
+            _log("설정 파일 JSON 오류 %s: %s" % (p, e))
+            return {}
     return {}
 
 
-def _etc(cfg, key, default):
-    etc = cfg.get("etc")
+def _sec(cfg, name):
+    v = cfg.get(name)
+    return v if isinstance(v, dict) else {}
+
+
+def _etc(sec, key, default=None):
+    etc = sec.get("etc")
     if isinstance(etc, dict) and key in etc:
         return etc[key]
-    return cfg.get(key, default)
+    return sec.get(key, default)
 
 
 def _num(v, default):
@@ -76,30 +110,64 @@ def _num(v, default):
     return n if n > 0 else default
 
 
-def configured(cfg=None):
+def endpoint(cfg=None):
+    """2단계 endpoint. 경로가 없으면 VERIFY_PATH를 붙인다 (호스트만 적어도 동작)."""
     cfg = load_config() if cfg is None else cfg
-    return bool(str(cfg.get("url") or "").strip())
+    url = str(_sec(cfg, "verify").get("url") or cfg.get("url") or "").strip()
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    if not parts.path or parts.path == "/":
+        return url.rstrip("/") + VERIFY_PATH
+    return url
 
 
-def _forward_names(cfg):
-    names = _etc(cfg, "forward_headers", None)
+def configured(cfg=None):
+    return bool(endpoint(load_config() if cfg is None else cfg))
+
+
+def public_config(cfg=None):
+    """브라우저가 1단계를 수행하는 데 필요한 정보만. 자격 정보는 담지 않는다."""
+    cfg = load_config() if cfg is None else cfg
+    local = _sec(cfg, "local")
+    return {
+        "configured": configured(cfg),
+        "verify_url": endpoint(cfg),
+        "local": {
+            "url": str(local.get("url") or "").strip(),
+            "request": local.get("request"),
+            "response": local.get("response") or {"token": ""},
+            "timeout": _num(_etc(local, "timeout", 3), 3),
+        },
+    }
+
+
+def _mask(name, value):
+    lk = str(name).lower()
+    if any(t in lk for t in ("cookie", "authorization", "token", "key", "secret", "ticket", "auth")):
+        return "****(%d자)" % len(str(value))
+    return str(value)
+
+
+def _forward_names(verify):
+    names = _etc(verify, "forward_headers", None)
     if isinstance(names, list) and names:
         return [str(n) for n in names if str(n).strip()]
     return list(DEFAULT_FORWARD)
 
 
-def _headers(cfg, incoming):
-    """SSO 서버로 보낼 헤더. 설정의 header를 그대로 쓰고, forward_headers에 적힌 것만
+def _headers(verify, incoming):
+    """2단계 요청 헤더. 설정의 header를 그대로 쓰고, forward_headers에 적힌 것만
     브라우저 요청에서 옮겨 담는다 (세션 쿠키가 있어야 누구인지 알 수 있다)."""
     out = {"Accept": "application/json"}
-    extra = cfg.get("header")
+    extra = verify.get("header")
     if isinstance(extra, dict):
         for k, v in extra.items():
             if str(k) == "disabled":
                 continue  # llm.json과 같은 규칙 — 적어두되 보내지 않는다
             out[str(k)] = str(v)
     if incoming is not None:
-        for name in _forward_names(cfg):
+        for name in _forward_names(verify):
             try:
                 val = incoming.get(name)
             except AttributeError:
@@ -109,130 +177,170 @@ def _headers(cfg, incoming):
     return out
 
 
-def _session_key(headers):
-    """캐시 키. 세션을 식별하는 헤더 값만 해시한다 (값 자체는 남기지 않는다)."""
-    raw = "|".join(str(headers.get(n) or "") for n in sorted(headers))
+def _fill(value, token):
+    """설정 값의 {token} 자리를 1단계 토큰으로 치환한다."""
+    if isinstance(value, str):
+        return value.replace("{token}", "" if token is None else str(token))
+    if isinstance(value, dict):
+        return {k: _fill(v, token) for k, v in value.items() if str(k) != "disabled"}
+    if isinstance(value, list):
+        return [_fill(v, token) for v in value]
+    return value
+
+
+def _body(verify, token):
+    """2단계 요청 본문. 설정의 body를 그대로 쓰되 {token}을 치환한다."""
+    b = verify.get("body")
+    if not isinstance(b, dict):
+        b = {}
+    out = _fill(b, token)
+    # body에 {token} 자리를 안 적었는데 토큰이 있으면 그대로 흘려보내지 않는다 — 로그로 알린다
+    if token and "{token}" not in json.dumps(b, ensure_ascii=False):
+        _log("주의: verify.body에 \"{token}\" 자리가 없어 1단계 토큰이 실리지 않는다")
+    return out
+
+
+def _session_key(headers, token):
+    raw = "|".join("%s=%s" % (k, headers[k]) for k in sorted(headers)) + "|" + str(token or "")
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:32]
 
 
 def _pick(obj, path):
+    """점으로 이어진 경로로 값 꺼내기. 경로가 ""면 obj 자체를 값으로 본다."""
     cur = obj
-    for part in str(path).split("."):
-        if isinstance(cur, list):
-            try:
-                cur = cur[int(part)]
-                continue
-            except (ValueError, IndexError):
+    if str(path) != "":
+        for part in str(path).split("."):
+            if isinstance(cur, list):
+                try:
+                    cur = cur[int(part)]
+                    continue
+                except (ValueError, IndexError):
+                    return None
+            if not isinstance(cur, dict) or part not in cur:
                 return None
-        if not isinstance(cur, dict) or part not in cur:
-            return None
-        cur = cur[part]
-    if isinstance(cur, (str, int)) and str(cur).strip():
+            cur = cur[part]
+    if isinstance(cur, (str, int, float)) and str(cur).strip():
         return str(cur).strip()
     return None
 
 
-# 응답에서 값을 꺼낼 기본 경로 (이 환경의 SSO 응답 형태)
-DEFAULT_FIELDS = {
-    "id_field": ["data.EP_LOGINID", "EP_LOGINID", "id", "user_id", "username"],
-    "name_field": ["data.EP_USERNAME", "EP_USERNAME", "name", "username"],
-    "dept_field": ["data.EP_DEPTNAME", "EP_DEPTNAME", "dept", "department"],
-}
-
-
-def _field(body, cfg, key):
-    fields = cfg.get(key) or DEFAULT_FIELDS[key]
-    if isinstance(fields, str):
-        fields = [fields]
-    for f in fields:
-        got = _pick(body, f)
-        if got:
-            return got
-    return None
+def _response_map(verify):
+    m = verify.get("response")
+    if not isinstance(m, dict) or not m:
+        return dict(DEFAULT_RESPONSE)
+    return {k: v for k, v in m.items() if str(k) != "disabled"}
 
 
 def _preview(body, limit=600):
-    """콘솔 확인용 응답 미리보기. 길면 자른다."""
     try:
-        s = json.dumps(body, ensure_ascii=False)
+        s = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
     except (TypeError, ValueError):
         s = str(body)
     return s[:limit] + ("…" if len(s) > limit else "")
 
 
-def _request(cfg, headers, timeout):
-    parts = urlsplit(str(cfg.get("url")).strip())
+def _request(verify, url, headers, body, timeout, method):
+    parts = urlsplit(url)
     conn_cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
     conn = conn_cls(parts.netloc, timeout=timeout)
     try:
         path = parts.path or "/"
         if parts.query:
             path += "?" + parts.query
-        conn.request(str(_etc(cfg, "method", "GET")).upper(), path, headers=headers)
+        data = None
+        if method in ("POST", "PUT", "PATCH"):
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            headers = dict(headers, **{"Content-Type": "application/json",
+                                       "Content-Length": str(len(data))})
+        started = time.time()
+        conn.request(method, path, body=data, headers=headers)
         r = conn.getresponse()
-        return r.status, r.read(MAX_BYTES)
+        raw = r.read(MAX_BYTES)
+        _log("%s %s -> %s (%dms, %dB)" % (method, url, r.status,
+                                          int((time.time() - started) * 1000), len(raw)))
+        return r.status, raw
     finally:
         conn.close()
 
 
-def whoami(incoming_headers=None):
-    """로그인 id 조회. 어떤 실패에서도 예외를 던지지 않고 guest를 돌려준다.
+def whoami(incoming_headers=None, token=None):
+    """로그인 확인. 어떤 실패에서도 예외를 던지지 않고 guest를 돌려준다.
 
-    반환: {"id", "name", "dept", "source", "service", "error"}
+    반환: {"id", "name", "dept", "source", "service", "status", "error", "response"}
       source  = "sso" | "none"
       service = "up" | "down" | "unconfigured"
     """
     cfg = load_config()
-    if not configured(cfg):
+    url = endpoint(cfg)
+    if not url:
         return {"id": GUEST, "source": "none", "service": "unconfigured"}
-    url = str(cfg.get("url") or "")
+    verify = _sec(cfg, "verify") or cfg
 
-    headers = _headers(cfg, incoming_headers)
-    key = _session_key(headers)
+    headers = _headers(verify, incoming_headers)
+    key = _session_key(headers, token)
     now = time.time()
     with _LOCK:
         hit = _CACHE.get(key)
         if hit and hit[0] > now:
             return dict(hit[1])
 
-    timeout = _num(_etc(cfg, "timeout", 3), 3)
+    body = _body(verify, token)
+    method = str(_etc(verify, "method", DEFAULT_METHOD)).upper()
+    timeout = _num(_etc(verify, "timeout", 3), 3)
     result = {"id": GUEST, "source": "none", "service": "down", "url": url}
+
+    _log("확인 시작 %s | token %s | 헤더 %s | body %s" % (
+        url, "있음(%d자)" % len(str(token)) if token else "없음",
+        ", ".join("%s=%s" % (k, _mask(k, v)) for k, v in sorted(headers.items())),
+        _preview({k: _mask(k, v) for k, v in body.items()}, 200)))
     try:
-        status, raw = _request(cfg, headers, timeout)
+        status, raw = _request(verify, url, headers, body, timeout, method)
+        if status == 405:
+            alt = "GET" if method == "POST" else "POST"
+            _log("405 Method Not Allowed — %s로 재시도한다 (verify.etc.method로 고정할 수 있다)" % alt)
+            status, raw = _request(verify, url, headers, body, timeout, alt)
+            if status < 400:
+                result["method_used"] = alt
         # HTTP 응답이 왔다면 서버는 살아 있다. 401/403은 "로그인 안 됨"이지 장애가 아니다.
         result["service"] = "up"
+        result["status"] = status
+        text = raw.decode("utf-8", "replace")
         if status < 400:
             try:
-                body = json.loads(raw.decode("utf-8", "replace"))
+                doc = json.loads(text)
             except ValueError:
-                body = None
-            uid = _field(body, cfg, "id_field") if body is not None else None
-            if uid:
-                result["id"] = uid
+                doc = None
+            fields = _response_map(verify)
+            got = {k: _pick(doc, v) for k, v in fields.items()} if doc is not None else {}
+            if got.get("id"):
                 result["source"] = "sso"
-                name = _field(body, cfg, "name_field")
-                dept = _field(body, cfg, "dept_field")
-                if name:
-                    result["name"] = name
-                if dept:
-                    result["dept"] = dept
+                for k, v in got.items():
+                    if v:
+                        result[k] = v
             else:
-                # 통신은 됐는데 찾는 값이 없는 경우. 화면 콘솔에서 원인을 보도록 응답을 일부 싣는다
-                # (id를 못 찾았으므로 개인정보가 아니라 형태 확인용이다)
-                result["error"] = "no id field in response (looked for %s)" % (
-                    cfg.get("id_field") or DEFAULT_FIELDS["id_field"])
-                result["response"] = _preview(body if body is not None else raw)
+                # 통신은 됐는데 찾는 값이 없는 경우. 원인을 보도록 응답을 일부 싣는다
+                result["error"] = "응답에서 id를 찾지 못함 (경로 %s)" % fields.get("id")
+                result["response"] = _preview(doc if doc is not None else text)
         else:
             result["error"] = "HTTP %s" % status
+            result["response"] = _preview(text)
     except Exception as e:  # 연결 실패·타임아웃 — 서비스가 죽은 것으로 본다
         result["error"] = "%s: %s" % (type(e).__name__, e)
+
+    if result["source"] == "sso":
+        _log("로그인 확인 id=%s name=%s dept=%s" % (
+            result["id"], result.get("name", "-"), result.get("dept", "-")))
+    else:
+        _log("guest 유지 (service=%s) %s%s" % (
+            result["service"], result.get("error", ""),
+            " | 응답 " + result["response"] if result.get("response") else ""))
 
     ttl = _num(_etc(cfg, "cache_seconds", 60), 60)
     if result["service"] == "down":
         ttl = min(ttl, _num(_etc(cfg, "health_seconds", 10), 10))
     with _LOCK:
         _CACHE[key] = (now + ttl, dict(result))
-        if len(_CACHE) > 512:  # 상한 — 오래된 것부터 버린다
+        if len(_CACHE) > 512:
             for k in sorted(_CACHE, key=lambda x: _CACHE[x][0])[:256]:
                 _CACHE.pop(k, None)
         _HEALTH[0], _HEALTH[1] = now + _num(_etc(cfg, "health_seconds", 10), 10), result["service"]
@@ -240,24 +348,32 @@ def whoami(incoming_headers=None):
 
 
 def health():
-    """서비스 생사만 가볍게 확인 (화면의 빨간 LED용). 캐시된 값이 있으면 그것을 쓴다."""
+    """2단계 서비스 생사만 가볍게 확인 (화면 LED용). 캐시된 값이 있으면 그것을 쓴다."""
     cfg = load_config()
-    if not configured(cfg):
+    url = endpoint(cfg)
+    if not url:
         return {"service": "unconfigured", "url": ""}
     now = time.time()
     with _LOCK:
         if _HEALTH[0] > now and _HEALTH[1]:
-            return {"service": _HEALTH[1], "url": str(cfg.get("url") or ""), "cached": True}
+            return {"service": _HEALTH[1], "url": url, "cached": True}
+    verify = _sec(cfg, "verify") or cfg
     timeout = _num(_etc(cfg, "health_seconds", 10), 10)
     service, err = "down", None
+    # 생사만 보면 되므로 TCP 연결만 확인한다. 빈 토큰으로 verify_sso를 두드리면
+    # 상대 서버 로그에 실패 기록이 쌓이고 의미도 없다.
+    parts = urlsplit(url)
+    port = parts.port or (443 if parts.scheme == "https" else 80)
     try:
-        _request(cfg, _headers(cfg, None), min(timeout, _num(_etc(cfg, "timeout", 3), 3)))
+        socket.create_connection((parts.hostname, port),
+                                 min(timeout, _num(_etc(verify, "timeout", 3), 3))).close()
         service = "up"
     except Exception as e:
         err = "%s: %s" % (type(e).__name__, e)
+        _log("생사 확인 실패 %s:%s %s" % (parts.hostname, port, err))
     with _LOCK:
         _HEALTH[0], _HEALTH[1] = now + timeout, service
-    out = {"service": service, "url": str(cfg.get("url") or "")}
+    out = {"service": service, "url": url}
     if err:
         out["error"] = err
     return out
