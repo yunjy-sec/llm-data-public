@@ -3660,7 +3660,12 @@
   // 점으로 이어진 경로로 값 꺼내기 (경로가 ""면 값 자체). 서버의 _pick과 같은 규칙이다.
   // 내려가는 도중 값이 JSON 문자열이면 한 번 파싱하고 계속 내려간다
   // (KnoxTray의 raw.data처럼 문자열 안에 JSON이 들어 있는 응답용).
+  // 경로는 문자열 하나 또는 후보 배열. 먼저 값이 있는 경로를 쓴다.
   function pickPath(obj, path) {
+    if (Array.isArray(path)) {
+      for (const p of path) { const got = pickPath(obj, p); if (got) return got; }
+      return null;
+    }
     let cur = obj;
     if (String(path) !== "") {
       for (const part of String(path).split(".")) {

@@ -27,6 +27,8 @@ llm.json과 같은 방식이다. 주고받는 key와 value를 설정에 모두 �
                  {"json": {...}} 로 감싸면 그 안을 채운 뒤 JSON 문자열로 만든다
                  (token 안에 JSON 문자열을 넣어야 하는 규약용).
     - response:  응답에서 값을 꺼낼 경로. {"id": ..., "name": ..., "dept": ...}
+                 경로 중간이 JSON 문자열이면 자동으로 객체로 바꾸고 계속 내려간다.
+                 배열로 후보 경로를 여러 개 줄 수 있다.
     - etc:       method(기본 POST) timeout forward_headers 등. 전송되지 않는다.
 
 1단계 설정이 없으면 2단계만 수행한다 (쿠키를 그대로 넘겨 확인하는 구성).
@@ -64,7 +66,12 @@ GUEST = "guest"
 VERIFY_PATH = "/api/verify_sso"
 DEFAULT_METHOD = "POST"          # 이 endpoint는 POST를 받는다
 DEFAULT_FORWARD = ("Cookie", "Authorization")
-DEFAULT_RESPONSE = {"id": "data.EP_LOGINID", "name": "data.EP_USERNAME", "dept": "data.EP_DEPTNAME"}
+# 응답에서 값을 꺼낼 기본 경로. 후보를 여러 개 두어 중첩이 조금 달라도 찾는다.
+DEFAULT_RESPONSE = {
+    "id": ["data.response.EP_LOGINID", "data.EP_LOGINID", "response.EP_LOGINID", "EP_LOGINID"],
+    "name": ["data.response.EP_USERNAME", "data.EP_USERNAME", "response.EP_USERNAME", "EP_USERNAME"],
+    "dept": ["data.response.EP_DEPTNAME", "data.EP_DEPTNAME", "response.EP_DEPTNAME", "EP_DEPTNAME"],
+}
 
 _LOCK = threading.Lock()
 _CACHE = {}            # 세션키 -> (만료시각, 결과)
@@ -243,6 +250,15 @@ def _pick(obj, path):
     return None
 
 
+def _pick_any(obj, paths):
+    """경로 하나 또는 후보 여러 개로 값 찾기. 먼저 값이 있는 경로를 쓴다."""
+    for path in ([paths] if isinstance(paths, str) else (paths or [])):
+        got = _pick(obj, path)
+        if got:
+            return got
+    return None
+
+
 def _response_map(verify):
     m = verify.get("response")
     if not isinstance(m, dict) or not m:
@@ -335,7 +351,7 @@ def whoami(incoming_headers=None, values=None):
             except ValueError:
                 doc = None
             fields = _response_map(verify)
-            got = {k: _pick(doc, v) for k, v in fields.items()} if doc is not None else {}
+            got = {k: _pick_any(doc, v) for k, v in fields.items()} if doc is not None else {}
             if got.get("id"):
                 result["source"] = "sso"
                 for k, v in got.items():

@@ -36,15 +36,15 @@
       }
     },
     "response": {
-      "id": "data.EP_LOGINID",
-      "name": "data.EP_USERNAME",
-      "dept": "data.EP_DEPTNAME"
+      "id": "data.response.EP_LOGINID",
+      "name": "data.response.EP_USERNAME",
+      "dept": "data.response.EP_DEPTNAME"
     },
     "etc": {
       "설명": "2단계. 서버가 1단계 값을 담아 복호화 요청을 보낸다. 서버가 RSA로 key를 풀고 AES/CBC로 userInfo를 풀어 사용자 정보를 돌려준다.",
       "url": "8000 포트만 localhost가 아니다. 실제 호스트를 적는다. 경로를 빼고 호스트만 적으면 /api/verify_sso를 붙인다.",
       "body": "요청 본문에 실을 key와 value를 그대로 적는다. \"{이름}\"은 1단계 값으로 치환되고, {\"json\": {...}}로 감싸면 그 안을 채운 뒤 JSON 문자열로 만든다.",
-      "response": "응답에서 값을 꺼낼 경로. 여기서도 경로 중간이 JSON 문자열이면 자동으로 객체로 바꾸고 계속 내려가므로, data가 문자열이어도 data.EP_LOGINID로 적으면 된다. id를 못 찾으면 guest로 남고 주황 LED가 켜진다.",
+      "response": "응답에서 값을 꺼낼 경로. 여기서도 경로 중간이 JSON 문자열이면 자동으로 객체로 바꾸고 계속 내려간다. 응답이 {\"data\": {\"response\": \"{\\\"EP_LOGINID\\\": ...}\"}} 모양이라 data.response.EP_LOGINID로 적는다. 배열로 후보 경로를 여러 개 줄 수도 있다. id를 못 찾으면 guest로 남고 주황 LED가 켜진다.",
       "method": "POST",
       "method 설명": "405가 오면 다른 메서드로 한 번 재시도하고 로그를 남긴다.",
       "forward_headers": ["Cookie", "Authorization"],
@@ -56,7 +56,7 @@
     "흐름 2": "KnoxTray 응답에서 local.response 경로로 userInfo와 key를 꺼낸다 (data가 JSON 문자열이라 자동 파싱된다).",
     "흐름 3": "그 둘을 verify.body의 token에 JSON 문자열로 담아 verify.url로 POST한다.",
     "흐름 4": "서버가 RSA 개인키로 key를 복호화하고 AES/CBC(IV=0x00*16)로 userInfo를 복호화해 사용자 정보를 돌려준다.",
-    "흐름 5": "verify.response 경로로 id 이름 부서를 꺼내 화면에 표시한다.",
+    "흐름 5": "verify.response 경로로 id 이름 부서를 꺼내 화면에 표시한다. data.response도 JSON 문자열이라 자동 파싱된다.",
     "LED": "초록 = id를 가져옴 / 주황 = 통신은 됐지만 응답에서 값을 못 찾음 / 빨강 = 서비스 응답 없음",
     "로그": "각 단계가 서버 터미널에 [SSO] 접두어로, 같은 내용이 브라우저 console에 [sso]로 남는다. 자격 정보는 값 대신 길이만 표시된다.",
     "실패 시": "어떤 단계가 실패하든 id는 guest로 유지되고 다른 기능은 그대로 동작한다.",
