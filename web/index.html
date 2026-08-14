@@ -2,8 +2,10 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>llm-data — 표 데이터 스키마 정규화</title>
+<!-- interactive-widget=resizes-content: 소프트 키보드가 올라오면 레이아웃 뷰포트도 함께 줄여
+     입력창이 키보드에 가려지지 않게 한다 (keyboard occlusion 방지, Chrome 108+) -->
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<title>llm-data 표 데이터 스키마 정규화</title>
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="vendor/highlight/styles/github.min.css" media="(prefers-color-scheme: light)">
 <link rel="stylesheet" href="vendor/highlight/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
@@ -13,11 +15,10 @@
 <header>
   <div class="brand">
     <h1>llm-data</h1>
-    <span class="sub">표 텍스트 → JSON Schema 정규화 · 데이터셋 축적·편집 · 마스터 관리 · LLM 대화</span>
     <button id="info-btn" class="iconbtn gearbtn" type="button" title="이 repo를 가져다 쓰는 분들을 위한 접목 가이드 (게이트웨이 연동 키 매핑)">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
     </button>
-    <button id="storage-btn" class="iconbtn gearbtn" type="button" title="저장 영역(LOGIC·PERSIST·RUNTIME)과 설정 파일 경로 안내">
+    <button id="storage-btn" class="iconbtn gearbtn" type="button" title="저장 영역(LOGIC PERSIST RUNTIME)과 설정 파일 경로 안내">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
     </button>
   </div>
@@ -45,7 +46,7 @@
 <main>
   <section class="panel" id="settings-panel">
     <details id="settings-box">
-      <summary><h2>0 · 설정 · LLM 연결 / 시스템 프롬프트</h2><span class="hint">token·url 등 연결 정보와 변환 프롬프트를 조회·편집·저장</span></summary>
+      <summary><h2>0 설정 LLM 연결 / 시스템 프롬프트</h2><button type="button" class="infotip" aria-label="설명" title="설명 보기" data-tip="LLM 연결 정보(token url 등)와 변환 시스템 프롬프트를 조회 편집 저장합니다.">i</button></summary>
       <div class="setgrid">
         <div>
           <div class="panel-head">
@@ -53,7 +54,7 @@
             <button id="save-config" class="small">저장</button>
           </div>
           <textarea id="config" spellcheck="false" placeholder='{"base_url":"http://127.0.0.1:8820","model":"sonnet","headers":{"Authorization":"Bearer <token>"}}'></textarea>
-          <div class="hint">token은 <code>headers.Authorization</code>(Bearer) 또는 <code>api_key_env</code>(환경변수 이름)로 지정합니다. 저장 즉시 다음 변환부터 적용됩니다.</div>
+          <button type="button" class="infotip" aria-label="설명" title="설명 보기" data-tip="token은 <code>headers.Authorization</code>(Bearer) 또는 <code>api_key_env</code>(환경변수 이름)로 지정합니다. 저장 즉시 다음 변환부터 적용됩니다.">i</button>
         </div>
         <div>
           <div class="panel-head">
@@ -61,7 +62,7 @@
             <button id="save-prompt" class="small">저장</button>
           </div>
           <textarea id="prompt" spellcheck="false"></textarea>
-          <div class="hint"><code>{{TARGET_SCHEMA}}</code> 자리에 목표 스키마가 치환되어 들어갑니다 — 반드시 유지하세요.</div>
+          <button type="button" class="infotip" aria-label="설명" title="설명 보기" data-tip="<code>{{TARGET_SCHEMA}}</code> 자리에 목표 스키마가 치환되어 들어갑니다 반드시 유지하세요.">i</button>
         </div>
       </div>
     </details>
@@ -69,8 +70,8 @@
 
   <section class="panel" id="input-panel">
     <div class="panel-head">
-      <h2>1 · 원본 데이터</h2>
-      <span class="hint">Excel·JSON·HTML 등 어디서 복사했든 텍스트로 붙여넣기 (Ctrl+Enter 실행)</span>
+      <h2>1 원본 데이터</h2>
+      <button type="button" class="infotip" aria-label="설명" title="설명 보기" data-tip="Excel JSON HTML 등 어디서 복사했든 텍스트로 붙여넣으세요. Ctrl+Enter로 실행합니다.">i</button>
     </div>
     <div id="example-btns" class="exbtns"></div>
     <textarea id="input" placeholder="여기에 표 데이터를 붙여넣으세요…" spellcheck="false"></textarea>
@@ -78,7 +79,7 @@
 
   <section class="panel" id="schema-panel">
     <details id="schema-box">
-      <summary><h2>2 · 목표 Schema</h2><span class="hint">columns → fields의 id로 레코드가 만들어집니다 (형식 설명은 상단 ℹ)</span></summary>
+      <summary><h2>2 목표 Schema</h2><button type="button" class="infotip" aria-label="설명" title="설명 보기" data-tip="columns → fields의 id로 레코드가 만들어집니다. 스키마 형식 설명은 상단 ℹ 버튼을 참고하세요.">i</button></summary>
       <div class="dsbtns" style="margin:8px 0 2px">
         <select id="schema-master-pick" title="마스터 스키마 선택"></select>
         <button id="schema-master-load" class="small">마스터 불러오기</button>
@@ -94,7 +95,7 @@
   </div>
 
   <section class="panel" id="history-panel">
-    <div class="panel-head"><h2>3 · 작업 이력</h2><button id="refresh-jobs" class="small">새로고침</button></div>
+    <div class="panel-head"><h2>3 작업 이력</h2><button id="refresh-jobs" class="small">새로고침</button></div>
     <div id="history"></div>
   </section>
 
@@ -107,11 +108,11 @@
         <button id="edit-refresh" class="small">새로고침</button>
       </span>
     </div>
-    <div class="hint">행을 클릭하면 편집 modal이 열립니다. user_id·created_at·updated_at은 자동 관리(편집 불가)입니다.</div>
+    <button type="button" class="infotip" aria-label="설명" title="설명 보기" data-tip="행을 클릭하면 편집 modal이 열립니다. user_id created_at updated_at은 자동 관리되어 편집할 수 없습니다.">i</button>
     <div id="edit-table"></div>
     <div class="rsec">
       <h3>Excel 전체 편집 (Luckysheet)</h3>
-      <div class="hint">셀을 직접 수정한 뒤 "적용"을 누르면 데이터셋에 반영됩니다 — <b>회색 열(id·user_id·created_at·updated_at)은 편집 대상이 아니며 수정해도 무시됩니다</b>. 행의 모든 셀을 지우면 삭제, id 없는 새 행은 추가됩니다.</div>
+      <button type="button" class="infotip" aria-label="설명" title="설명 보기" data-tip="셀을 직접 수정한 뒤 &quot;적용&quot;을 누르면 데이터셋에 반영됩니다. <b>회색 열(id user_id created_at updated_at)은 편집 대상이 아니며 수정해도 무시됩니다.</b> 행의 모든 셀을 지우면 삭제, id 없는 새 행은 추가됩니다.">i</button>
       <div class="dsbtns" style="margin:8px 0">
         <button id="edit-apply" class="insertbtn">시트 변경사항 적용</button>
         <button id="edit-sheet-reset" class="small">시트 되돌리기</button>
@@ -122,7 +123,7 @@
 
   <section class="panel" id="master-panel" hidden>
     <div class="panel-head">
-      <h2>마스터 관리 <span class="hint">변환·CRUD가 참조하는 스키마와 코드 테이블</span></h2>
+      <h2>마스터 관리 <button type="button" class="infotip" aria-label="설명" title="설명 보기" data-tip="변환과 CRUD가 참조하는 스키마와 코드 테이블을 관리합니다.">i</button></h2>
       <span class="dsbtns">
         <select id="master-select"></select>
         <button id="master-new" class="small">새 스키마</button>
@@ -132,54 +133,78 @@
         <button id="master-delete" class="small">삭제</button>
       </span>
     </div>
-    <div class="hint">필드 행을 클릭하면 편집 modal이 열립니다 (group·id·label·type·description·description_detail·mapping_logic·코드). group 제목의 ✎로 묶음 이름을 바꿉니다. 변경은 상단 "저장"을 눌러야 확정됩니다. 모든 데이터 값은 string입니다.</div>
+    <button type="button" class="infotip" aria-label="설명" title="설명 보기" data-tip="필드 행을 클릭하면 편집 modal이 열립니다(group id label type description description_detail mapping_logic 코드). group 제목의 ✎로 묶음 이름을 바꿉니다. 변경은 상단 &quot;저장&quot;을 눌러야 확정되며, 모든 데이터 값은 string입니다.">i</button>
     <div id="master-fields"></div>
     <details class="artifact" data-art="master-json">
-      <summary>스키마 JSON (결과물 — 읽기 전용)</summary>
+      <summary>스키마 JSON (결과물 읽기 전용)</summary>
       <textarea id="master-json" readonly spellcheck="false"></textarea>
     </details>
   </section>
 
+  <!-- 대화 탭은 ChatGPT식 수직 2분할: 좌측에 탭·목록·부가 정보, 우측은 화면을 꽉 채운 채팅창 -->
   <section class="panel" id="chat-panel" hidden>
-    <div id="chat-models" class="modelcards"></div>
-    <div class="panel-head">
-      <h2>대화 <span id="chat-stats" class="chatstats"></span></h2>
-      <span class="dsbtns">
-        <button id="chat-new" class="small">새 대화</button>
-        <button id="chat-newproj" class="small" title="대화를 묶어 분류할 프로젝트를 만듭니다">+ 새 프로젝트</button>
-      </span>
-    </div>
     <div class="chatlayout">
-      <div id="chat-list"></div>
-      <div class="chatmain">
+      <div class="chatside">
+        <div id="chat-tabs-slot"></div><!-- 대화 탭에서는 #tabs가 여기로 이동한다 -->
+        <div id="chat-list">
+          <div class="sidebtns">
+            <button id="chat-new" class="sidebtn" title="새 대화를 시작합니다">＋ 대화</button>
+            <button id="chat-newproj" class="sidebtn" title="대화를 묶어 분류할 프로젝트를 만듭니다">＋ 프로젝트</button>
+          </div>
+          <div id="chat-list-items"></div>
+        </div>
+        <div class="sidemeta"><span id="chat-stats" class="chatstats"></span></div>
+        <details id="chat-models-box" class="artifact" data-art="chat-models">
+          <summary>모델 목록 (상세 상태 지원 옵션)</summary>
+          <div id="chat-models" class="modelcards"></div>
+        </details>
         <details id="chat-system-box" class="artifact" data-art="chat-system">
           <summary>system prompt</summary>
-          <textarea id="chat-system" spellcheck="false" placeholder="이 대화에 적용할 system prompt — 전송 시 함께 반영됩니다"></textarea>
+          <textarea id="chat-system" spellcheck="false" placeholder="이 대화에 적용할 system prompt 전송 시 함께 반영됩니다"></textarea>
         </details>
-        <div id="chat-messages"><div class="empty">메시지를 보내면 새 대화가 시작됩니다.</div></div>
-        <div class="chatinput">
-          <textarea id="chat-input" placeholder="메시지를 입력하세요… (Ctrl+Enter 전송)" spellcheck="false"></textarea>
-          <button id="chat-send" class="primary">보내기</button>
-        </div>
         <details id="chat-request-box" class="artifact" data-art="chat-request">
-          <summary>마지막 요청 전문 (URL · headers · body)</summary>
+          <summary>마지막 요청 전문 (URL headers body)</summary>
           <div id="chat-request"><div class="empty">아직 전송된 요청이 없습니다.</div></div>
         </details>
         <details id="chat-response-box" class="artifact" data-art="chat-response">
           <summary>마지막 응답 전문 (envelope)</summary>
           <div id="chat-response"><div class="empty">아직 수신된 응답이 없습니다.</div></div>
         </details>
-        <details id="chat-tree-box" class="artifact" data-art="chat-tree" open>
+        <details id="chat-tree-box" class="artifact" data-art="chat-tree">
           <summary>대화 분기 트리</summary>
           <div id="chat-tree"><div class="empty">대화가 없습니다.</div></div>
         </details>
+      </div>
+      <div id="side-backdrop" hidden></div><!-- 모바일 드로어 뒤 배경 (탭하면 닫힘) -->
+      <!-- 드로어 우측에 딱 붙는 프로젝트 이름 레일 (현재 대화가 프로젝트 소속일 때만) -->
+      <button id="project-rail" type="button" hidden title="프로젝트 홈 열기"></button>
+      <div class="chatmain">
+        <!-- 모바일 상단 바: 좌측 사이드바를 슬라이딩 오버레이로 여닫는다 -->
+        <div class="chattopbar">
+          <button id="side-toggle" type="button" class="iconbtn sidetoggle" aria-label="대화 목록 열기" title="대화 목록">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+          </button>
+          <span id="chat-title-mini" class="titlemini"></span>
+        </div>
+        <div id="project-home" hidden></div>
+        <div id="chat-messages"><div class="empty">메시지를 보내면 새 대화가 시작됩니다.</div></div>
+        <div class="scrolljump" id="chat-jump" hidden>
+          <button type="button" data-jump="top" title="맨 위로" aria-label="맨 위로">▲</button>
+          <button type="button" data-jump="bottom" title="맨 아래로" aria-label="맨 아래로">▼</button>
+        </div>
+        <div class="chatinput">
+          <!-- 옵션 바는 app.js의 optbarHtml(prefix)가 채운다 — 수정 상자와 동일한 패턴 -->
+          <div class="optbar" id="chat-optbar"></div>
+          <textarea id="chat-input" placeholder="메시지를 입력하세요… (Ctrl+Enter 전송)" spellcheck="false"></textarea>
+          <button id="chat-send" class="iconsend" title="보내기 (Ctrl+Enter)" aria-label="보내기"></button>
+        </div>
       </div>
     </div>
   </section>
 
   <section class="panel" id="log-panel" hidden>
     <div class="panel-head"><h2>데이터셋 편집 로그</h2><button id="log-refresh" class="small">새로고침</button></div>
-    <div class="hint">행 CRUD(생성·수정·삭제)와 데이터셋 작업(insert·load·save·clear)이 기록됩니다.</div>
+    <button type="button" class="infotip" aria-label="설명" title="설명 보기" data-tip="행 CRUD(생성 수정 삭제)와 데이터셋 작업(insert load save clear)이 기록됩니다.">i</button>
     <div id="log-table"></div>
   </section>
 
@@ -199,7 +224,7 @@
 
   <section class="panel" id="result-panel" hidden>
     <div class="panel-head">
-      <h2>4 · 결과 <span id="result-jobid" class="jobid"></span></h2>
+      <h2>4 결과 <span id="result-jobid" class="jobid"></span></h2>
       <button id="copy-json" class="small">JSON 복사</button>
     </div>
     <div id="result"></div>

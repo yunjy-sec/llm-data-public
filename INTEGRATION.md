@@ -1,7 +1,7 @@
 # 접목 가이드 — 이 repo를 다른 LLM 백엔드에 연결하기
 
 이 서비스의 LLM 접점은 `llm.py` **하나**다. 기본값은 OpenAI 호환 endpoint
-(`base_url + /{model}/v1/chat/completions`, 또는 `url`로 전체 endpoint 직접 지정)이며,
+(`base_url + /{model}/v1/chat/completions`, 게이트웨이는 `api_base_url`, 또는 `url`로 직접 지정)이며,
 설정은 화면의 **0번 설정 탭** 또는 `config/llm.json`(실제 경로는 헤더 ⚙ 참고 — PERSIST 영역)에서 관리한다.
 같은 내용을 화면 헤더의 ℹ 버튼으로도 볼 수 있다.
 
@@ -88,36 +88,64 @@ env 미설정 시 실제 경로는 PERSIST 대상 전부가 `<repo>/data` 아래
 
 ## 전달(passthrough) 키 — 게이트웨이 접목 지점
 
-아래 키는 설정에 **저장·표시만** 되고, 기본 구현은 `OPENAI_API_KEY`만 `Authorization: Bearer`로 쓴다.
-API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식별자·계정 발급 토큰을 요구하는 형태)에 접목할 때
-`llm.py`의 `chat_url()`과 `_headers()`에서 매핑한다.
+API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식별자·계정 정보를 요구하는 형태)은
+**설정만으로 접목된다.** 아래 키를 `config/llm.json`에 채우면 코드 수정이 필요 없다.
 
 | 키 | 접목 방법 |
 |---|---|
-| `api_base_url` | 게이트웨이 루트 → `chat_url()`이 이 값을 쓰게 하거나, `url`에 전체 endpoint를 기입 |
-| `env_model` | 게이트웨이가 요구하는 모델 이름 → payload의 `model`로 매핑 |
-| `credential_key` | 자격 티켓 (예: `credential:TICKET-…`) → 게이트웨이가 요구하는 헤더로 전달 |
-| `send_system_name` | 호출 시스템 식별자 → 게이트웨이가 요구하는 헤더/필드로 전달 |
-| `user_id` / `user_pw` | 토큰 발급형 게이트웨이용 → 발급 API 호출 후 `Authorization` 설정 |
+| `api_base_url` | **게이트웨이 루트. 코드 수정 없이 그대로 동작한다.** `/v1`로 끝나면 `/chat/completions`만 덧붙이고, 모델은 URL 경로가 아니라 요청 body의 `model` 필드로 보낸다 |
+| `header_map` | **전달용 키를 헤더 이름에 매핑.** 예: `{"credential_key": "x-dep-ticket", "user_id": "User-Id"}` |
+| `credential_key` | 자격 티켓 (예: `credential:TICKET-…`). `header_map`으로 헤더 이름을 지정한다 |
+| `send_system_name` | 호출 시스템 식별자. `headers`에 직접 쓰거나 `header_map`으로 매핑 |
+| `user_id` / `user_pw` | 계정 정보. `header_map`으로 헤더에 싣거나, 토큰 발급형이면 발급 API 호출 후 `Authorization` 설정 |
+| `env_model` | 게이트웨이가 요구하는 모델 이름. `model`/`models`에 그 값을 그대로 쓰면 된다 |
 | `OPENAI_API_KEY` | 표준 Bearer token — 기본 구현이 그대로 사용 |
 
-## `_headers()` 확장 예시
+### 게이트웨이형 환경 설정 예시 (코드 수정 불필요)
 
-```python
-def _headers(cfg):
-    headers = {"Content-Type": "application/json"}
-    if cfg.get("credential_key"):
-        headers["X-Credential"] = cfg["credential_key"]
-    if cfg.get("send_system_name"):
-        headers["X-System-Name"] = cfg["send_system_name"]
-    if cfg.get("user_id") and cfg.get("user_pw"):
-        headers["Authorization"] = "Bearer " + issue_token(
-            cfg["api_base_url"], cfg["user_id"], cfg["user_pw"])
-    return headers
+```json
+{
+  "api_base_url": "https://apigw.example.com/llm/v1",
+  "model": "gpt-oss-120b",
+  "models": ["gpt-oss-120b", "gpt-oss-20b"],
+  "headers": {
+    "Send-System-Name": "playground",
+    "User-Type": "AD_ID"
+  },
+  "header_map": {
+    "credential_key": "x-dep-ticket",
+    "user_id": "User-Id"
+  },
+  "credential_key": "credential:TICKET-...",
+  "user_id": "yunjy"
+}
 ```
 
-`chat_url()`을 바꿀 때는 게이트웨이의 실제 chat completions 경로를 반환하게 하면 된다.
-모델별 경로가 없는 게이트웨이라면 `url` 키에 전체 endpoint를 넣는 쪽이 코드 수정 없이 가장 빠르다.
+- **모델 목록**은 `models`로 정한다. 소스의 하드코딩 목록을 고칠 필요가 없다.
+- **헤더 이름과 값은 적은 그대로 전송된다.** `x-dep-ticket`이 `X-dep-ticket`으로 바뀌지 않는다
+  (urllib이 헤더 이름을 `capitalize()`로 바꾸는 문제 때문에 전송 계층에서 `http.client`를 쓴다).
+- 요청 전문 화면에서 `x-dep-ticket` 같은 자격 정보는 `****`로 마스킹된다.
+
+## endpoint 결정 순서
+
+1. `url` — 전체 endpoint를 그대로 사용 (최우선)
+2. `api_base_url` — 게이트웨이 루트. `/chat/completions`로 끝나면 그대로, `/v1`로 끝나면
+   `/chat/completions`만 덧붙이고, 그 외에는 `/v1/chat/completions`를 붙인다. **모델 세그먼트를 넣지 않는다**
+3. `base_url` — `{base_url}/{model}/v1/chat/completions` (llm-api처럼 모델별 경로를 쓰는 서버)
+
+취소(`/cancel`)와 상태 조회(`/api/health`)에 쓰는 API 루트도 같은 기준으로 계산되므로,
+`api_base_url`만 지정해도 취소·상태 표시가 올바른 곳을 향한다.
+
+## 코드 수정이 필요한 경우
+
+설정으로 풀리지 않는 것은 **토큰 발급형 게이트웨이** 정도다. `user_id`/`user_pw`로 먼저 토큰을
+발급받아야 한다면 `llm.py`의 `_headers()`에 발급 호출을 넣는다.
+
+```python
+if cfg.get("user_id") and cfg.get("user_pw"):
+    headers["Authorization"] = "Bearer " + issue_token(
+        cfg["api_base_url"], cfg["user_id"], cfg["user_pw"])
+```
 
 ## 접목 시 유의
 

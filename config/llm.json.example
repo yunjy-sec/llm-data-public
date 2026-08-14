@@ -2,20 +2,49 @@
   "_설명": "LLM 연결 설정. 토큰은 코드가 아니라 이 파일(headers) 또는 환경변수(api_key_env)에 둔다.",
   "base_url": "http://127.0.0.1:8820",
   "model": "sonnet",
+  "models": [
+    "fable",
+    "opus",
+    "sonnet",
+    "haiku",
+    "gpt-5.6",
+    "gpt-5.5",
+    "gpt-5.3",
+    "o3"
+  ],
   "url": "",
+  "api_base_url": "",
   "headers": {
-    "Authorization": "Bearer <발급-토큰>"
+    "Authorization": "Bearer <발급-토큰>",
+    "Send-System-Name": "playground",
+    "User-Type": "AD_ID"
+  },
+  "header_map": {
+    "credential_key": "x-dep-ticket",
+    "user_id": "User-Id"
   },
   "api_key_env": "LLM_DATA_API_KEY",
   "timeout": 300,
   "response_schema": false,
-  "extra_payload": { "temperature": 0 },
-  "_비고": "아래 키들은 이 환경에서는 미사용 — 다른 환경 연동 시 사용",
+  "extra_payload": {
+    "temperature": 0
+  },
+  "model_options": {
+    "gpt-oss-120b": {
+      "temperature": [
+        "0",
+        "0.3",
+        "0.7",
+        "1"
+      ],
+      "reasoning_effort": []
+    }
+  },
+  "_비고": "models: 이 환경에서 쓸 모델 목록(미지정 시 기본 목록). api_base_url: 게이트웨이 루트, /v1로 끝나면 /chat/completions만 덧붙이고 모델은 body의 model 필드로 보낸다. headers와 header_map의 이름·값은 대소문자 그대로 전송된다. header_map은 아래 전달용 키의 값을 지정한 헤더 이름으로 보낸다.",
   "OPENAI_API_KEY": "dummy",
   "credential_key": "credential:TICKET-",
-  "send_system_name": "platground",
+  "send_system_name": "playground",
   "env_model": "gpt-oss-120b",
-  "api_base_url": "http://apigw....",
   "user_id": "",
   "user_pw": ""
 }

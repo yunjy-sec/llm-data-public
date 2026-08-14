@@ -5,11 +5,11 @@
   const $ = (sel) => document.querySelector(sel);
   const TAB_DESC = {
     fill: "데이터가 스키마를 전부 채우는 기본 시나리오",
-    missing: "데이터에 빈 셀이 있어 스키마를 못 채우는 시나리오 — 빈 값 필드를 노란색 배경으로 표시",
-    dataset: "변환 결과를 기존 데이터셋 표에 새 행으로 추가(insert) — 방금 추가된 행은 녹색 표시",
-    edit: "데이터셋 파일을 골라 HTML 표로 보고, 행 클릭 편집·새 행 추가·삭제(CRUD)를 modal로 수행",
-    log: "행 CRUD와 데이터셋·마스터 작업의 감사 로그",
-    master: "변환·CRUD가 참조하는 스키마와 코드 테이블(enum)을 관리",
+    missing: "데이터에 빈 셀이 있어 스키마를 못 채우는 시나리오 빈 값 필드를 노란색 배경으로 표시",
+    dataset: "변환 결과를 기존 데이터셋 표에 새 행으로 추가(insert) 방금 추가된 행은 녹색 표시",
+    edit: "데이터셋 파일을 골라 HTML 표로 보고, 행 클릭 편집 새 행 추가 삭제(CRUD)를 modal로 수행",
+    log: "행 CRUD와 데이터셋 마스터 작업의 감사 로그",
+    master: "변환 CRUD가 참조하는 스키마와 코드 테이블(enum)을 관리",
     chat: "대화 이력을 기억하며 긴 컨텍스트를 이어가는 다중 턴 대화",
   };
   const state = {
@@ -44,7 +44,7 @@
     // _global 세션 만료 시 200 로그인 HTML로 리다이렉트되므로 JSON 파싱 전에 감지
     if (r.redirected && /\/login\b/.test(new URL(r.url).pathname)) {
       setDot(false);
-      throw new Error("세션 만료 — 페이지를 새로고침해 다시 로그인하세요");
+      throw new Error("세션 만료 페이지를 새로고침해 다시 로그인하세요");
     }
     let parseFailed = false;
     return r.json().catch(() => { parseFailed = true; return {}; }).then((j) => {
@@ -163,6 +163,10 @@
         if (m === models.default) o.selected = true;
         sel.appendChild(o);
       });
+      state.modelList = models.models || [];
+      state.modelOptions = models.options || {};   // {model: {temperature:[], reasoning_effort:[]}}
+      state.defaultModel = models.default;
+      initChatOptbar();
       state.examples = examples.examples || [];
       renderExampleButtons();
       if (!$("#schema").value) {
@@ -256,7 +260,134 @@
     if (tab === "log") renderLogPanel();
     if (tab === "master") refreshMasters();
     if (tab === "chat") { refreshChats(); fetchLlmModels(); }
+    applyChatFullLayout(tab === "chat");
+    setSidebar(false);
     pushRoute();
+  }
+
+  // ---- 소프트 키보드 대응 (keyboard occlusion) ----
+  // 모바일에서 키보드가 올라오면 layout viewport(vh)는 그대로인데 실제로 보이는
+  // visual viewport만 줄어들어 입력창이 키보드에 가린다. VisualViewport로 실측한
+  // 높이를 --vvh에 넣어 채팅 영역이 항상 "보이는 만큼만" 차지하게 한다.
+  function syncViewportHeight() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    document.documentElement.style.setProperty("--vvh", vv.height + "px");
+    // iOS는 레이아웃을 줄이지 않고 페이지를 밀어 올리므로 오프셋도 보정한다
+    document.documentElement.style.setProperty("--vvtop", (vv.offsetTop || 0) + "px");
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", syncViewportHeight);
+    window.visualViewport.addEventListener("scroll", syncViewportHeight);
+    syncViewportHeight();
+  }
+  // 입력창에 포커스가 가면 키보드가 올라온 뒤 확실히 보이도록 스크롤을 맞춘다
+  $("#chat-input").addEventListener("focus", () => {
+    setTimeout(() => {
+      syncViewportHeight();
+      const el = document.querySelector(".chatinput");
+      if (el) el.scrollIntoView({ block: "nearest" });
+      const box = $("#chat-messages");
+      if (box && !state.userScrolled) { markProgScroll(); box.scrollTop = box.scrollHeight; }
+    }, 250);
+  });
+
+  // ---- info 툴팁 (긴 안내문 대체) ----
+  // 아이콘을 누르면(터치·클릭) 말풍선으로 설명을 띄우고, 다른 곳을 누르면 닫는다.
+  // 설명 원문은 아이콘의 data-tip에 두므로 마크업만 추가하면 어디서든 재사용된다.
+  function hideTip() {
+    const b = document.getElementById("tipbubble");
+    if (b) b.remove();
+    document.querySelectorAll(".infotip.on").forEach((el) => el.classList.remove("on"));
+  }
+
+  function showTip(btn) {
+    hideTip();
+    btn.classList.add("on");
+    const b = document.createElement("div");
+    b.id = "tipbubble";
+    b.innerHTML = btn.getAttribute("data-tip") || "";
+    document.body.appendChild(b);
+    const r = btn.getBoundingClientRect(), bb = b.getBoundingClientRect();
+    let left = Math.min(Math.max(8, r.left - 6), window.innerWidth - bb.width - 8);
+    let top = r.bottom + 6;
+    if (top + bb.height > window.innerHeight - 8) top = Math.max(8, r.top - bb.height - 6);
+    b.style.left = Math.round(left) + "px";
+    b.style.top = Math.round(top) + "px";
+  }
+
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".infotip");
+    if (btn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.classList.contains("on")) hideTip(); else showTip(btn);
+      return;
+    }
+    if (!e.target.closest("#tipbubble")) hideTip();
+  });
+  window.addEventListener("scroll", hideTip, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideTip(); });
+
+  // ---- 모바일 사이드바 드로어 (off-canvas) ----
+  function setSidebar(open) {
+    document.body.classList.toggle("sideopen", !!open);
+    const bd = document.getElementById("side-backdrop");
+    if (bd) bd.hidden = !open;
+    const btn = document.getElementById("side-toggle");
+    if (btn) btn.setAttribute("aria-label", open ? "대화 목록 닫기" : "대화 목록 열기");
+    updateProjectRail();
+  }
+
+  // 현재 보고 있는 대화(또는 프로젝트 홈)가 속한 프로젝트
+  function currentProjectId() {
+    if (state.viewProject) return state.viewProject;
+    const c = (state.chats || []).find((x) => x.id === state.chatId);
+    return (c && c.project) || null;
+  }
+
+  // 드로어 오른쪽에 딱 붙는 프로젝트 이름 레일 — 드로어가 열려 있고 소속 프로젝트가 있을 때만
+  function updateProjectRail() {
+    const rail = document.getElementById("project-rail");
+    if (!rail) return;
+    const pid = currentProjectId();
+    const p = pid ? (state.projects || {})[pid] : null;
+    if (!p || !document.body.classList.contains("sideopen")) { rail.hidden = true; return; }
+    rail.hidden = false;
+    rail.setAttribute("data-pid", pid);
+    rail.innerHTML = ICON_FOLDER + "<span>" + esc(p.name) + "</span>";
+  }
+
+  document.getElementById("project-rail").addEventListener("click", (e) => {
+    const pid = e.currentTarget.getAttribute("data-pid");
+    if (pid) openProjectHome(pid);
+  });
+  document.getElementById("side-toggle").addEventListener("click", () => {
+    setSidebar(!document.body.classList.contains("sideopen"));
+  });
+  document.getElementById("side-backdrop").addEventListener("click", () => setSidebar(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && document.body.classList.contains("sideopen")) setSidebar(false);
+  });
+
+  // 대화 탭은 ChatGPT식 전체 화면 2분할 — 탭 버튼도 좌측 사이드로 옮긴다.
+  // 원래 위치(부모·다음 형제)를 기억해 두었다가 다른 탭으로 나갈 때 그대로 되돌린다.
+  function applyChatFullLayout(on) {
+    const nav = document.getElementById("tabs");
+    const slot = document.getElementById("chat-tabs-slot");
+    if (!nav || !slot) return;
+    if (on) {
+      if (!state.tabsHome) state.tabsHome = { parent: nav.parentNode, next: nav.nextSibling };
+      if (nav.parentNode !== slot) slot.appendChild(nav);
+      const h = document.querySelector("header");
+      if (h) document.documentElement.style.setProperty("--headh", h.offsetHeight + "px");
+      document.body.classList.add("chatfull");
+    } else {
+      if (state.tabsHome && nav.parentNode === slot) {
+        state.tabsHome.parent.insertBefore(nav, state.tabsHome.next);
+      }
+      document.body.classList.remove("chatfull");
+    }
   }
 
   // ---- 라우팅: 탭·대화 목록·개별 대화를 hash로 표현 — 브라우저 뒤로/앞으로 가기 지원 ----
@@ -266,18 +397,32 @@
   function pushRoute() {
     if (applyingRoute) return;
     let h = "#tab=" + state.tab;
-    if (state.tab === "chat" && state.chatId) h += "&chat=" + state.chatId;
+    if (state.tab === "chat" && state.viewProject) h += "&project=" + state.viewProject;
+    else if (state.tab === "chat" && state.chatId) h += "&chat=" + state.chatId;
     if (location.hash !== h) location.hash = h; // 할당 = history entry 생성 → 뒤로가기 동작
   }
 
   async function applyRoute() {
-    const m = /^#tab=([a-z]+)(?:&chat=([A-Za-z0-9-]+))?/.exec(location.hash || "");
+    const m = /^#tab=([a-z]+)(?:&chat=([A-Za-z0-9-]+))?(?:&project=([A-Za-z0-9-]+))?/.exec(location.hash || "");
     if (!m || !ROUTE_TABS.includes(m[1])) return;
-    const tab = m[1], chat = m[2] || null;
+    const tab = m[1], chat = m[2] || null, proj = m[3] || null;
     applyingRoute = true;
     try {
       if (tab !== state.tab) switchTab(tab);
       if (tab === "chat") {
+        if (proj) {
+          state.viewProject = proj;
+          if (state.openProjects) delete state.openProjects[proj];
+          renderChatList();
+          renderProjectHome();
+          return;
+        }
+        if (state.viewProject) { // 프로젝트 홈에서 벗어나는 경우
+          state.viewProject = null;
+          $("#project-home").hidden = true;
+          document.querySelector(".chatmain").classList.remove("projmode");
+          renderChatList();
+        }
         if (chat && chat !== state.chatId) await loadChatDoc(chat);
         else if (!chat && state.chatId) {
           // 대화 미지정 route = 목록(새 대화 대기) 상태
@@ -391,7 +536,7 @@
     }
     if (job.state === "done") {
       const sec = job.latency_ms != null ? (job.latency_ms / 1000).toFixed(1) + "초" : "";
-      return '<span class="chip ok">완료 ' + sec + " · " + (job.record_count || 0) + "건</span>";
+      return '<span class="chip ok">완료 ' + sec + " " + (job.record_count || 0) + "건</span>";
     }
     return '<span class="chip err">실패</span>';
   }
@@ -451,7 +596,7 @@
 
   function fmtCell(v, highlightMissing) {
     if (v === null || v === undefined || v === "") {
-      return highlightMissing ? '<td class="miss"></td>' : '<td class="null">—</td>';
+      return highlightMissing ? '<td class="miss"></td>' : '<td class="null"> </td>';
     }
     if (v === "PASS") return '<td class="pass">PASS</td>';
     if (v === "FAIL") return '<td class="fail">FAIL</td>';
@@ -490,14 +635,14 @@
     const req = doc.request || {};
     const resp = doc.response || {};
     const reqLine = req.url
-      ? '<div class="reqline"><code>' + esc(req.method || "POST") + " " + esc(req.url) + "</code> · model <b>" +
-        esc(req.model || "") + "</b> · payload " + (req.payload_bytes || 0).toLocaleString() + " bytes · response_format " +
-        (req.response_format ? "YES" : "no") + " · timeout " + (req.timeout_s || "?") + "s</div>"
+      ? '<div class="reqline"><code>' + esc(req.method || "POST") + " " + esc(req.url) + "</code> model <b>" +
+        esc(req.model || "") + "</b> payload " + (req.payload_bytes || 0).toLocaleString() + " bytes response_format " +
+        (req.response_format ? "YES" : "no") + " timeout " + (req.timeout_s || "?") + "s</div>"
       : '<div class="empty">LLM 요청 정보는 프롬프트 구성 후 표시됩니다.</div>';
     const reqHeaders = req.url
       ? (req.headers
         ? '<h4>headers (토큰 마스킹)</h4><pre class="raw">' + esc(JSON.stringify(req.headers, null, 2)) + "</pre>"
-        : '<div class="hint">headers 기록 추가 전에 실행된 작업이라 headers 전문이 없습니다 — 새 변환부터 표시됩니다.</div>')
+        : '<button type="button" class="infotip" aria-label="설명" data-tip="headers 기록 추가 전에 실행된 작업이라 headers 전문이 없습니다. 새 변환부터 표시됩니다.">i</button>')
       : "";
     return '<div class="rsec"><h3>진행 흐름</h3>' +
       '<div class="tblwrap"><table><thead><tr><th>단계</th><th>상태</th><th>걸린 시간</th></tr></thead><tbody>' +
@@ -589,7 +734,7 @@
     }
     const u = doc.usage || {};
     if (u.total_tokens) {
-      html += '<div class="usage">tokens: ' + esc(u.prompt_tokens) + " in / " + esc(u.completion_tokens) + " out · model " + esc(doc.model || "") + "</div>";
+      html += '<div class="usage">tokens: ' + esc(u.prompt_tokens) + " in / " + esc(u.completion_tokens) + " out model " + esc(doc.model || "") + "</div>";
     }
     html += '<div class="rsec"><h3>결과 JSON</h3><pre class="raw">' + esc(JSON.stringify(res, null, 2)) + "</pre></div>";
     box.innerHTML = html;
@@ -638,7 +783,7 @@
     }
     if (d.type === "edit-blocked") {
       toast(d.what + "은(는) 편집할 수 없습니다" +
-        (String(d.what).indexOf("헤더") !== -1 ? " — 스키마 변경은 마스터 관리 탭에서 하세요" : " (자동 관리 열)"));
+        (String(d.what).indexOf("헤더") !== -1 ? " 스키마 변경은 마스터 관리 탭에서 하세요" : " (자동 관리 열)"));
       return;
     }
     if (d.type === "cell-edited") {
@@ -701,7 +846,7 @@
     const lastJob = (ds.last_insert || {}).job_id;
     $("#ds-file").textContent = ds.file || "dataset.json";
     $("#ds-count").textContent = "누적 " + ds.rows.length + "행" +
-      (ds.last_insert ? " · 최근 추가 " + ds.last_insert.count + "행" : "");
+      (ds.last_insert ? " 최근 추가 " + ds.last_insert.count + "행" : "");
     box.innerHTML = '<div class="tblwrap"><table class="schematbl">' + tableHeadHtml(cols, ds.schema) + "<tbody>" +
       ds.rows.map((r) => '<tr class="' + (lastJob && r._job === lastJob ? "newrow" : "") + '">' +
         cols.map((c) => fmtCell(r[c], false)).join("") + "</tr>").join("") +
@@ -798,7 +943,7 @@
     const expected = (state.editSheetPayload && state.editSheetPayload.cols) || [];
     const missing = expected.filter((c) => !header.includes(c));
     const extra = header.filter((c) => !expected.includes(c));
-    missing.forEach((c) => violations.push("헤더: '" + c + "' 열이 변경되거나 삭제됨 — 스키마 변경은 마스터 관리 탭에서"));
+    missing.forEach((c) => violations.push("헤더: '" + c + "' 열이 변경되거나 삭제됨 스키마 변경은 마스터 관리 탭에서"));
     extra.forEach((c) => violations.push("헤더: 스키마에 없는 열 '" + c + "' 추가됨"));
 
     const rows = sheetRows.map((sr) => {
@@ -817,7 +962,7 @@
       rows.forEach((pr) => {
         const v = pr.values[k];
         if (v !== null && v !== undefined && v !== "" && !spec.enum.includes(v)) {
-          violations.push("행 " + (pr.id || "신규") + ": '" + k + "' 값 '" + v + "' — 허용 코드: " + spec.enum.join(", "));
+          violations.push("행 " + (pr.id || "신규") + ": '" + k + "' 값 '" + v + "' 허용 코드: " + spec.enum.join(", "));
         }
       });
     });
@@ -847,7 +992,7 @@
     const delPreview = deleted.slice(0, 20).join(", ") + (deleted.length > 20 ? " 외 " + (deleted.length - 20) + "건" : "");
     $("#modal-form").innerHTML =
       (violations.length
-        ? '<div class="jerr">정합성 위반 ' + violations.length + "건 — 아래 항목을 수정한 뒤 다시 \"시트 변경사항 적용\"으로 검증하세요. 저장할 수 없습니다.</div>" +
+        ? '<div class="jerr">정합성 위반 ' + violations.length + "건 아래 항목을 수정한 뒤 다시 \"시트 변경사항 적용\"으로 검증하세요. 저장할 수 없습니다.</div>" +
           '<ul class="vlist">' + violations.map((v) => "<li>" + esc(v) + "</li>").join("") + "</ul>"
         : '<div class="vok">✓ 모두 정합성이 맞습니다. 아래 요약을 확인하고 저장하세요.</div>') +
       '<div class="rsec"><h3>변경 요약</h3><ul class="vsum">' +
@@ -861,7 +1006,7 @@
   function saveValidatedBulk() {
     if (!state.pendingBulk) { closeModal(); return; }
     apiPost("api/dataset/bulk", { rows: state.pendingBulk, user: state.user }).then((r) => {
-      toast("저장 완료: 수정 " + r.updated + " · 추가 " + r.created + " · 삭제 " + r.deleted + " (총 " + r.total + "행)");
+      toast("저장 완료: 수정 " + r.updated + " 추가 " + r.created + " 삭제 " + r.deleted + " (총 " + r.total + "행)");
       state.pendingBulk = null;
       closeModal();
       refreshDataset();
@@ -923,7 +1068,7 @@
       input = '<input data-field="' + esc(k) + '" value="' + (val == null ? "" : esc(val)) + '">';
     }
     const shown = spec && spec.label ? spec.label : k;
-    return '<label class="mfield"><span title="id: ' + esc(k) + (desc ? " — " + desc : "") + '">' + esc(shown) + "</span>" + input + "</label>";
+    return '<label class="mfield"><span title="id: ' + esc(k) + (desc ? " " + desc : "") + '">' + esc(shown) + "</span>" + input + "</label>";
   }
 
   function openRowModal(row) {
@@ -937,8 +1082,8 @@
     $("#modal-save").textContent = row ? "저장" : "추가";
     const props = schemaFieldMap(ds.schema);
     $("#modal-form").innerHTML = schemaFields(ds.schema).map((f) => fieldHtml(f.id, props[f.id], row ? row[f.id] : null)).join("") +
-      (row ? '<div class="meta-ro">user_id ' + esc(row.user_id || "") + " · created " + esc(row.created_at || "") +
-             " · updated " + esc(row.updated_at || "") + " (자동 관리 — 편집 불가)</div>" : "");
+      (row ? '<div class="meta-ro">user_id ' + esc(row.user_id || "") + " created " + esc(row.created_at || "") +
+             " updated " + esc(row.updated_at || "") + " (자동 관리 편집 불가)</div>" : "");
     // 단일 행 Luckysheet: 전체 편집 시트와 동일 구성(id + 스키마 + meta 열), 헤더 + 이 행만.
     // 셀 수정은 폼으로 즉시 동기화 (id·meta 열은 폼 필드가 없어 자연히 무시됨)
     const sheetCols = datasetCols(ds);
@@ -1060,7 +1205,7 @@
       masters.forEach((m) => {
         const o = document.createElement("option");
         o.value = m.name;
-        o.textContent = m.name + " (" + m.fields + "필드 · 코드 " + m.codes + ")";
+        o.textContent = m.name + " (" + m.fields + "필드 코드 " + m.codes + ")";
         sel.appendChild(o);
       });
       if (selectName && masters.some((m) => m.name === selectName)) sel.value = selectName;
@@ -1114,7 +1259,7 @@
         "<th>mapping_logic_ip_eval_esd</th><th>mapping_logic_chatbot</th><th>enum (코드)</th></tr></thead><tbody>" +
         (col.fields || []).map((f) => {
           const codes = Array.isArray(f.enum) ? f.enum.join(", ") : "";
-          const cell = (v) => "<td>" + (v ? esc(v) : '<span class="null">—</span>') + "</td>";
+          const cell = (v) => "<td>" + (v ? esc(v) : '<span class="null"> </span>') + "</td>";
           return '<tr data-mfield="' + esc(f.id) + '"><td>' + esc(f.id) + "</td>" +
             cell(f.label) + "<td>" + esc(f.type || "string") + "</td>" +
             cell(f.description) + cell(f.description_detail) +
@@ -1130,7 +1275,7 @@
     const groups = (schema.columns || []).map((c) => c.group || "");
     modalCtx = { kind: "field", name: fieldName };
     $("#modal-save").disabled = false;
-    $("#modal-title").textContent = fieldName ? "필드 편집 — " + fieldName : "새 필드 추가";
+    $("#modal-title").textContent = fieldName ? "필드 편집 " + fieldName : "새 필드 추가";
     $("#modal-delete").hidden = !fieldName;
     $("#modal-save").textContent = fieldName ? "저장" : "추가";
     $("#modal-sheet-sec").hidden = true;
@@ -1144,7 +1289,7 @@
         esc(g || "(group 없음)") + "</option>").join("") +
       '<option value="__new__">+ 새 group…</option></select></label>' +
       '<label class="mfield" id="mf-newgroup-wrap" hidden><span>새 group 이름</span><input data-mf="newgroup" value=""></label>' +
-      line("name", "id (key)", fieldName || "", "영문·숫자·_") +
+      line("name", "id (key)", fieldName || "", "영문 숫자 _") +
       line("label", "label (표시명)", spec.label, "예: 시료 번호") +
       line("type", "type", spec.type || "string", "string") +
       line("desc", "description", spec.description, "필드의 의미") +
@@ -1152,7 +1297,7 @@
       line("mlogic1", "mapping_logic_ip_eval_esd", spec.mapping_logic_ip_eval_esd, "원본 열에서 가져오는 방법") +
       line("mlogic2", "mapping_logic_chatbot", spec.mapping_logic_chatbot, "챗봇 매핑 지침") +
       line("codes", "enum (코드 테이블)", Array.isArray(spec.enum) ? spec.enum.join(", ") : "", "콤마 구분, 비우면 자유 입력") +
-      '<div class="meta-ro">필드 = id(key)·label·type·description·description_detail·mapping_logic_ip_eval_esd·mapping_logic_chatbot' +
+      '<div class="meta-ro">필드 = id(key) label type description description_detail mapping_logic_ip_eval_esd mapping_logic_chatbot' +
       ' (+ 선택 enum). 채울 수 없는 항목은 비워 두면 ""로 저장됩니다. 데이터 값은 모두 string이며 변경은 상단 "저장"으로 확정됩니다.</div>';
     const gsel = document.querySelector('#modal-form [data-mf="group"]');
     gsel.addEventListener("change", () => {
@@ -1164,7 +1309,7 @@
   function saveFieldFromModal() {
     const get = (id) => document.querySelector('#modal-form [data-mf="' + id + '"]');
     const name = get("name").value.trim();
-    if (!/^[A-Za-z0-9_]{1,60}$/.test(name)) { toast("필드명은 영문·숫자·_ 만 (1~60자)"); return; }
+    if (!/^[A-Za-z0-9_]{1,60}$/.test(name)) { toast("필드명은 영문 숫자 _ 만 (1~60자)"); return; }
     const schema = state.masterSchema;
     if (!Array.isArray(schema.columns)) schema.columns = [];
     const oldName = modalCtx.name;
@@ -1201,7 +1346,7 @@
     schema.columns = schema.columns.filter((c) => (c.fields || []).length); // 빈 group 정리
     renderMasterEditor(schema);
     closeModal();
-    toast("필드 반영 — 상단 '저장'으로 확정하세요");
+    toast("필드 반영 상단 '저장'으로 확정하세요");
   }
 
   async function deleteFieldGuarded() {
@@ -1215,7 +1360,7 @@
       .map((r) => String(r.id));
     if (usedIds.length) {
       const preview = usedIds.slice(0, 20).join(", ") + (usedIds.length > 20 ? " 외 " + (usedIds.length - 20) + "건" : "");
-      window.alert("삭제 불가 — '" + ds.file + "' 데이터셋 " + usedIds.length + "개 행에 '" + name + "' 데이터가 있습니다.\n행 id: " + preview);
+      window.alert("삭제 불가 '" + ds.file + "' 데이터셋 " + usedIds.length + "개 행에 '" + name + "' 데이터가 있습니다.\n행 id: " + preview);
       if (!window.confirm("그래도 정말 삭제하시겠습니까?")) return;
       let ds2 = null;
       try { ds2 = await api("api/dataset"); } catch (e) { toast("재확인 실패: " + e.message); return; }
@@ -1242,7 +1387,7 @@
     schema.columns = (schema.columns || []).filter((c) => (c.fields || []).length); // 빈 group 정리
     renderMasterEditor(schema);
     closeModal();
-    toast("필드 삭제 반영 — 상단 '저장'으로 확정하세요");
+    toast("필드 삭제 반영 상단 '저장'으로 확정하세요");
   }
 
   $("#master-apply").addEventListener("click", async () => {
@@ -1267,7 +1412,7 @@
     }
     try {
       const r = await apiPost("api/master/apply", { name: name, user: state.user, mapping: mapping });
-      toast("적용 완료: 추가 " + r.added.length + " · 제거 " + r.removed.length + " · 이관 " +
+      toast("적용 완료: 추가 " + r.added.length + " 제거 " + r.removed.length + " 이관 " +
         Object.keys(r.renamed).length + " (총 " + r.total + "행)");
       if (r.enum_mismatch && Object.keys(r.enum_mismatch).length) {
         window.alert("코드 테이블과 불일치하는 기존 값이 있습니다:\n" +
@@ -1289,7 +1434,7 @@
       if (col) {
         col.group = next.trim();
         renderMasterEditor(state.masterSchema);
-        toast("group 이름 변경 — 상단 '저장'으로 확정하세요");
+        toast("group 이름 변경 상단 '저장'으로 확정하세요");
       }
       return;
     }
@@ -1316,7 +1461,7 @@
     }).catch((e) => toast("저장 실패: " + (e.code ? "(" + e.code + ") " : "") + e.message));
   });
   $("#master-new").addEventListener("click", () => {
-    const name = window.prompt("새 스키마 이름 (영문·숫자·-·_ 1~40자):", "");
+    const name = window.prompt("새 스키마 이름 (영문 숫자 - _ 1~40자):", "");
     if (!name) return;
     apiPost("api/master/create", { name: name.trim(), user: state.user }).then((r) => {
       toast("마스터 '" + r.name + "' 생성");
@@ -1339,7 +1484,7 @@
     if (connected) {
       const ids = ds.rows.map((r) => String(r.id));
       const preview = ids.slice(0, 20).join(", ") + (ids.length > 20 ? " 외 " + (ids.length - 20) + "건" : "");
-      window.alert("삭제 불가 — 마스터 '" + name + "'에 연결된 데이터가 있습니다.\n'" +
+      window.alert("삭제 불가 마스터 '" + name + "'에 연결된 데이터가 있습니다.\n'" +
         ds.file + "' " + ids.length + "행 (id: " + preview + ")");
       if (!window.confirm("그래도 정말 삭제하시겠습니까?")) return;
       let ds2 = null;
@@ -1379,13 +1524,27 @@
     renderModelCards();
   }
 
+  // 모델이 제공하는 추가 설정(요청 payload 옵션)을 카드에 표시 — 없으면 그렇게 명시
+  function modelOptsHtml(mid) {
+    const o = modelOptsFor(mid);
+    const parts = [];
+    if ((o.temperature || []).length) {
+      parts.push('<span class="pchip">temperature ' + esc(o.temperature.join(", ")) + "</span>");
+    }
+    if ((o.reasoning_effort || []).length) {
+      parts.push('<span class="pchip">reasoning_effort ' + esc(o.reasoning_effort.join(", ")) + "</span>");
+    }
+    return '<div class="mopts">' +
+      (parts.length ? parts.join(" ") : '<span class="cmeta">추가 설정 없음</span>') + "</div>";
+  }
+
   function renderModelCards() {
     const box = document.getElementById("chat-models");
     if (!box) return;
     const data = state.llmModels;
     if (!data) { box.innerHTML = ""; return; }
     if (!data.reachable) {
-      box.innerHTML = '<div class="empty">LLM 연결 안 됨 — ' + esc(data.error || "") + "</div>";
+      box.innerHTML = '<div class="empty">LLM 연결 안 됨 ' + esc(data.error || "") + "</div>";
       return;
     }
     const selected = $("#model").value;
@@ -1394,13 +1553,14 @@
       return '<div class="mcard' + (m.id === selected ? " sel" : "") + '" data-mid="' + esc(m.id) +
         '" title="' + esc(m.note || "") + '">' +
         '<span class="mname"><span class="dot ' + dotCls + '"></span>' + esc(m.id) +
-        ' <span class="mbadge">' + esc((m.backend || "") + (m.tier ? " · " + m.tier : "")) + "</span>" +
+        ' <span class="mbadge">' + esc((m.backend || "") + (m.tier ? " " + m.tier : "")) + "</span>" +
         '<button class="mdetail" type="button" title="JSON 원문 보기">상세</button></span>' +
         '<div class="mendp">' + esc(m.endpoint || "") + "</div>" +
-        "<div>timeout " + (m.timeout || "-") + "s · 동시 ≤" + (m.max_inflight || "-") +
-        (m.ewma_latency_ms ? " · 평균 " + (m.ewma_latency_ms / 1000).toFixed(1) + "s" : "") + "</div>" +
+        "<div>timeout " + (m.timeout || "-") + "s 동시 ≤" + (m.max_inflight || "-") +
+        (m.ewma_latency_ms ? " 평균 " + (m.ewma_latency_ms / 1000).toFixed(1) + "s" : "") + "</div>" +
         "<div>호출 " + (m.ok || 0) + " ok / " + (m.err || 0) + " err" +
-        (m.enabled === false ? " · <b>비활성</b>" : "") + "</div>" +
+        (m.enabled === false ? " <b>비활성</b>" : "") + "</div>" +
+        modelOptsHtml(m.id) +
         (m.last_error ? '<div class="merr">' + esc(m.last_error) + "</div>" : "") +
         "</div>";
     }).join("");
@@ -1424,7 +1584,7 @@
   // 접목 가이드 (헤더 ℹ): 이 repo를 다른 LLM 게이트웨이에 연결하는 방법
   document.getElementById("info-btn").addEventListener("click", () => {
     const row = (k, v) => "<tr><td><code>" + k + "</code></td><td>" + v + "</td></tr>";
-    openHtmlModal("접목 가이드 — 이 repo를 다른 LLM 백엔드에 연결하기",
+    openHtmlModal("접목 가이드 이 repo를 다른 LLM 백엔드에 연결하기",
       '<div class="hint">이 서비스의 LLM 접점은 <code>llm.py</code> 하나입니다. 기본값은 OpenAI 호환 ' +
       "endpoint(<code>base_url + /{model}/v1/chat/completions</code> 또는 <code>url</code> 직접 지정)이며, " +
       "설정은 0번 설정 탭 또는 <code>config/llm.json</code>(경로는 ⚙ 참고, PERSIST 영역)에서 관리합니다. " +
@@ -1433,12 +1593,12 @@
       '<div class="hint">의존성이 없습니다 (Python 표준 라이브러리만 사용). 프론트엔드도 빌드가 없어 ' +
       "<code>web/</code> 파일을 고치고 새로고침하면 반영됩니다.</div>" +
       '<pre class="raw">' + esc("python server.py --host 127.0.0.1 --port 8821\n" +
-        "# 외부 접근:  --host 0.0.0.0        (프록시 뒤에 둘 때는 stripPrefix 방식)\n" +
-        "# 컨테이너:   docker compose up -d --build   (PERSIST 볼륨 — DEPLOY.md)") + "</pre>" +
-      '<div class="hint">기동 후 <b>0번 설정 탭</b>에서 <code>base_url</code>을 LLM 서버 위치로 맞추면 됩니다 — ' +
+        "# 외부 접근: --host 0.0.0.0 (프록시 뒤에 둘 때는 stripPrefix 방식)\n" +
+        "# 컨테이너: docker compose up -d --build (PERSIST 볼륨 DEPLOY.md)") + "</pre>" +
+      '<div class="hint">기동 후 <b>0번 설정 탭</b>에서 <code>base_url</code>을 LLM 서버 위치로 맞추면 됩니다 ' +
       "상단 상태 표시줄이 연결됨으로 바뀌는지로 확인합니다.</div></div>" +
       '<div class="rsec"><h3>스키마 형식 (데이터셋 정의)</h3>' +
-      '<div class="hint">변환 목표·데이터셋·마스터가 모두 같은 형식을 씁니다. ' +
+      '<div class="hint">변환 목표 데이터셋 마스터가 모두 같은 형식을 씁니다. ' +
       "<code>columns</code>(표의 묶음) → <code>fields</code>(열) 2단 구조이며, " +
       "<b>field의 <code>id</code>가 JSON 연산의 key</b>이고 <code>group</code>은 표 헤더에서 열을 묶는 이름입니다. " +
       "출력 레코드는 group으로 중첩하지 않는 평면 객체입니다.</div>" +
@@ -1455,69 +1615,69 @@
         }],
       }, null, 2)) + "</pre>" +
       '<div class="tblwrap"><table><tbody>' +
-      row("id", "<b>JSON 연산의 key</b> — 레코드·행의 필드명. 스키마 전체에서 유일해야 합니다") +
+      row("id", "<b>JSON 연산의 key</b> 레코드 행의 필드명. 스키마 전체에서 유일해야 합니다") +
       row("group", "표 헤더에서 열을 묶는 이름 (병합 셀). 데이터 구조에는 영향 없음") +
       row("label", "표시명 (사람이 보는 이름). key로 쓰지 않습니다") +
-      row("type", "값 타입 — 저장되는 모든 값은 string입니다") +
+      row("type", "값 타입 저장되는 모든 값은 string입니다") +
       row("description / description_detail", "필드의 의미와 상세 규칙. LLM 변환 판단의 근거") +
       row("mapping_logic_ip_eval_esd / _chatbot", "원본의 어느 열에서 어떻게 가져올지에 대한 지침") +
-      row("enum", "선택 — 허용 코드 목록. 있으면 행 편집·시트 반영 시 코드 검증이 걸립니다") +
+      row("enum", "선택 허용 코드 목록. 있으면 행 편집 시트 반영 시 코드 검증이 걸립니다") +
       '</tbody></table></div><div class="hint">채울 수 없는 항목은 <code>""</code>로 비워 둡니다. ' +
       "표 헤더는 group(병합) → description → id → type → label 순서로 그려집니다. " +
       "구형 <code>properties</code> 스키마는 읽을 때 자동으로 이 형식으로 변환됩니다.</div></div>" +
       '<div class="rsec"><h3>대표 파일</h3><div class="tblwrap"><table><tbody>' +
-      row("server.py", "백엔드 — HTTP 서버·전체 API·잡 큐·저장. 저장 경로 상수가 상단에 있습니다") +
-      row("llm.py", "<b>LLM 접점 전부</b> — endpoint 조립·헤더·요청/파싱·설정. 접목 시 여기만 고칩니다") +
-      row("web/index.html", "프론트 — 탭·패널 구조와 요소 id") +
-      row("web/app.js", "프론트 — 모든 화면 로직 (변환·데이터셋·마스터·대화·라우팅)") +
-      row("web/styles.css", "프론트 — 테마 변수(light/dark)와 전체 스타일") +
-      row("web/sheet.html", "프론트 — Luckysheet 격리 iframe (표 편집)") +
-      row("config/llm.json.example", "설정 키 예시 — 복사해 llm.json으로 사용 (실제 파일은 커밋 금지)") +
-      row("prompts/table_to_schema.md", "변환 시스템 프롬프트 — <code>{{TARGET_SCHEMA}}</code> 치환") +
+      row("server.py", "백엔드 HTTP 서버 전체 API 잡 큐 저장. 저장 경로 상수가 상단에 있습니다") +
+      row("llm.py", "<b>LLM 접점 전부</b> endpoint 조립 헤더 요청/파싱 설정. 접목 시 여기만 고칩니다") +
+      row("web/index.html", "프론트 탭 패널 구조와 요소 id") +
+      row("web/app.js", "프론트 모든 화면 로직 (변환 데이터셋 마스터 대화 라우팅)") +
+      row("web/styles.css", "프론트 테마 변수(light/dark)와 전체 스타일") +
+      row("web/sheet.html", "프론트 Luckysheet 격리 iframe (표 편집)") +
+      row("config/llm.json.example", "설정 키 예시 복사해 llm.json으로 사용 (실제 파일은 커밋 금지)") +
+      row("prompts/table_to_schema.md", "변환 시스템 프롬프트 <code>{{TARGET_SCHEMA}}</code> 치환") +
       "</tbody></table></div></div>" +
-      '<div class="rsec"><h3>경로 설정 — ① LLM endpoint (0번 설정 탭)</h3>' +
+      '<div class="rsec"><h3>경로 설정 ① LLM endpoint (0번 설정 탭)</h3>' +
       '<div class="hint">설정 JSON을 고치고 저장하면 다음 요청부터 적용됩니다 (재기동 불필요). ' +
       "모델별 경로 규칙을 쓰는 서버는 <code>base_url</code>만, 규칙이 다른 게이트웨이는 " +
       "<code>url</code>에 <b>전체 endpoint</b>를 넣습니다 (이 값이 있으면 base_url 조립은 무시). " +
-      "실제로 나가는 URL은 대화·변환 이력의 <b>요청 전문</b>에서 확인합니다.</div></div>" +
-      '<div class="rsec"><h3>경로 설정 — ② 저장 경로 (환경변수)</h3><div class="tblwrap"><table><tbody>' +
-      row("LLM_DATA_PERSIST", "데이터셋·대화·마스터·프로젝트·로그·사용자 설정/프롬프트 (<b>유지 필요</b>)") +
+      "실제로 나가는 URL은 대화 변환 이력의 <b>요청 전문</b>에서 확인합니다.</div></div>" +
+      '<div class="rsec"><h3>경로 설정 ② 저장 경로 (환경변수)</h3><div class="tblwrap"><table><tbody>' +
+      row("LLM_DATA_PERSIST", "데이터셋 대화 마스터 프로젝트 로그 사용자 설정/프롬프트 (<b>유지 필요</b>)") +
       row("LLM_DATA_RUNTIME", "변환 작업 이력 (<b>유실 허용</b>)") +
       row("LLM_DATA_CONFIG", "설정 파일 경로 개별 지정 (PERSIST보다 우선)") +
       '</tbody></table></div><pre class="raw">' +
       esc("LLM_DATA_PERSIST=/data LLM_DATA_RUNTIME=/runtime python server.py --host 0.0.0.0 --port 8821") +
       '</pre><div class="hint">미설정 시 모두 <code>&lt;repo&gt;/data</code>를 씁니다. ' +
       "현재 적용된 실제 경로는 헤더 ⚙(저장 영역)에서 확인하세요.</div></div>" +
-      '<div class="rsec"><h3>동작 키 — 기본 구현이 직접 사용</h3><div class="tblwrap"><table><tbody>' +
+      '<div class="rsec"><h3>동작 키 기본 구현이 직접 사용</h3><div class="tblwrap"><table><tbody>' +
       row("base_url", "OpenAI 호환 서버 루트. 모델별 경로가 자동으로 붙습니다") +
       row("url", "전체 endpoint를 직접 지정할 때 (base_url 무시)") +
       row("model", "요청 payload의 model 값") +
-      row("headers", "요청에 그대로 합쳐지는 헤더 — token은 여기 Authorization에") +
+      row("headers", "요청에 그대로 합쳐지는 헤더 token은 여기 Authorization에") +
       row("api_key_env", "환경변수 이름으로 token을 줄 때") +
-      row("response_schema", "구조화 출력 강제 여부 — <b>미지원 모델이면 false 유지</b>") +
-      row("timeout / extra_payload", "요청 타임아웃 · payload 추가 필드") +
+      row("response_schema", "구조화 출력 강제 여부 <b>미지원 모델이면 false 유지</b>") +
+      row("timeout / extra_payload", "요청 타임아웃 payload 추가 필드") +
       "</tbody></table></div></div>" +
-      '<div class="rsec"><h3>전달(passthrough) 키 — 게이트웨이 접목 지점</h3>' +
-      '<div class="hint">아래 키는 설정에 저장·표시만 되고 기본 구현은 <code>OPENAI_API_KEY</code>만 ' +
+      '<div class="rsec"><h3>전달(passthrough) 키 게이트웨이 접목 지점</h3>' +
+      '<div class="hint">아래 키는 설정에 저장 표시만 되고 기본 구현은 <code>OPENAI_API_KEY</code>만 ' +
       "Authorization Bearer로 씁니다. 게이트웨이형 시스템에 접목할 때 <code>llm.py</code>의 " +
-      "<code>chat_url()</code>·<code>_headers()</code>에서 아래처럼 매핑하세요.</div>" +
+      "<code>chat_url()</code> <code>_headers()</code>에서 아래처럼 매핑하세요.</div>" +
       '<div class="tblwrap"><table><tbody>' +
       row("api_base_url", "게이트웨이 루트 → <code>chat_url()</code>이 이 값을 쓰도록 하거나, <code>url</code>에 전체 endpoint를 기입") +
       row("env_model", "게이트웨이가 요구하는 모델 이름 → payload의 <code>model</code>로 매핑") +
       row("credential_key", "자격 티켓 (예: credential:TICKET-…) → 게이트웨이가 요구하는 헤더로 전달") +
       row("send_system_name", "호출 시스템 식별자 → 게이트웨이가 요구하는 헤더/필드로 전달") +
       row("user_id / user_pw", "토큰 발급형 게이트웨이용 → 발급 API 호출 후 <code>Authorization</code>에 설정") +
-      row("OPENAI_API_KEY", "표준 Bearer token — 기본 구현이 그대로 사용") +
+      row("OPENAI_API_KEY", "표준 Bearer token 기본 구현이 그대로 사용") +
       "</tbody></table></div></div>" +
       '<div class="rsec"><h3>_headers() 확장 예시</h3><pre class="raw">' +
-      esc('def _headers(cfg):\n    headers = {"Content-Type": "application/json"}\n' +
-        '    if cfg.get("credential_key"):\n        headers["X-Credential"] = cfg["credential_key"]\n' +
-        '    if cfg.get("send_system_name"):\n        headers["X-System-Name"] = cfg["send_system_name"]\n' +
-        '    if cfg.get("user_id") and cfg.get("user_pw"):\n' +
-        '        headers["Authorization"] = "Bearer " + issue_token(\n' +
-        '            cfg["api_base_url"], cfg["user_id"], cfg["user_pw"])\n' +
-        "    return headers") + "</pre>" +
-      '<div class="hint">요청·응답 전문(마스킹된 headers 포함)은 변환 작업 이력과 대화 탭에서 항상 확인할 수 있어 ' +
+      esc('def _headers(cfg):\n headers = {"Content-Type": "application/json"}\n' +
+        ' if cfg.get("credential_key"):\n headers["X-Credential"] = cfg["credential_key"]\n' +
+        ' if cfg.get("send_system_name"):\n headers["X-System-Name"] = cfg["send_system_name"]\n' +
+        ' if cfg.get("user_id") and cfg.get("user_pw"):\n' +
+        ' headers["Authorization"] = "Bearer " + issue_token(\n' +
+        ' cfg["api_base_url"], cfg["user_id"], cfg["user_pw"])\n' +
+        " return headers") + "</pre>" +
+      '<div class="hint">요청 응답 전문(마스킹된 headers 포함)은 변환 작업 이력과 대화 탭에서 항상 확인할 수 있어 ' +
       "접목 디버깅에 그대로 활용됩니다.</div></div>");
   });
 
@@ -1525,20 +1685,20 @@
   document.getElementById("storage-btn").addEventListener("click", async () => {
     try {
       const s = await api("api/storage");
-      const html = '<div class="hint">PERSIST 영역은 배포 환경의 영구 저장소(volume·마운트)에 두어야 하며, ' +
+      const html = '<div class="hint">PERSIST 영역은 배포 환경의 영구 저장소(volume 마운트)에 두어야 하며, ' +
         "RUNTIME 영역은 재기동 시 유실되어도 무방합니다. 자세한 절차는 DEPLOY.md 참고.</div>" +
         (s.warning ? '<div class="rsec"><div class="warnbox">⚠ ' + esc(s.warning) + "</div></div>" : "") +
         s.areas.map((a) =>
           '<div class="rsec"><h3>' + esc(a.label) + "</h3>" +
           '<div class="reqline"><code>' + esc(a.root) + "</code>" +
-          (a.env ? " · env <b>" + esc(a.env) + "</b> " +
-            (a.env_active ? '<span class="chip ok">적용됨</span>' : '<span class="chip err">미설정 — 코드 디렉터리 아래 기본 경로</span>') : "") +
+          (a.env ? " env <b>" + esc(a.env) + "</b> " +
+            (a.env_active ? '<span class="chip ok">적용됨</span>' : '<span class="chip err">미설정 코드 디렉터리 아래 기본 경로</span>') : "") +
           "</div><div class=\"tblwrap\"><table><tbody>" +
           a.entries.map((en) => "<tr><td>" + esc(en.name) +
             '</td><td class="logdetail"><code>' + esc(en.path) + "</code>" +
-            (en.note ? ' <span class="cmeta">— ' + esc(en.note) + "</span>" : "") + "</td></tr>").join("") +
+            (en.note ? ' <span class="cmeta"> ' + esc(en.note) + "</span>" : "") + "</td></tr>").join("") +
           "</tbody></table></div></div>").join("");
-      openHtmlModal("저장 영역 · 설정 파일", html);
+      openHtmlModal("저장 영역 설정 파일", html);
     } catch (e) { toast("저장 영역 정보 로드 실패: " + e.message); }
   });
 
@@ -1548,7 +1708,8 @@
     const mid = card.getAttribute("data-mid");
     if (e.target.closest(".mdetail")) {
       const m = ((state.llmModels || {}).models || []).find((x) => x.id === mid);
-      if (m) openInfoModal("모델 상세 — " + mid, m);
+      // 상세 JSON에도 이 모델이 지원하는 추가 설정(temperature·reasoning_effort)을 함께 싣는다
+      if (m) openInfoModal("모델 상세 " + mid, Object.assign({}, m, { options: modelOptsFor(mid) }));
       return;
     }
     $("#model").value = mid;
@@ -1583,8 +1744,20 @@
   const ICON_PIN = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path></svg>';
   const ICON_FOLDER = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>';
 
+  // 프로젝트는 기본 접힘. 현재 활성 대화가 속한 프로젝트(또는 보고 있는 프로젝트 홈)만 펼친다.
+  // 사용자가 직접 토글한 프로젝트는 그 선택을 유지한다.
+  function activeProjectId() {
+    const c = (state.chats || []).find((x) => x.id === state.chatId);
+    return (c && c.project) || null;
+  }
+  function isProjectOpen(pid) {
+    const t = (state.openProjects || {})[pid];
+    if (t !== undefined) return t;
+    return pid === activeProjectId() || pid === state.viewProject;
+  }
+
   function renderChatList() {
-    const box = $("#chat-list");
+    const box = $("#chat-list-items");
     const chats = state.chats || [];
     if (!chats.length) {
       box.innerHTML = '<div class="empty">대화가 없습니다.</div>';
@@ -1594,8 +1767,8 @@
     const projects = state.projects || {};
     const itemHtml = (c) => {
       const tok = c.cum_tokens
-        ? '<span class="cmeta">누적 ' + c.cum_tokens.toLocaleString() + " · " +
-          c.ctx_tokens.toLocaleString() + "/" + Math.round(limit / 1000) + "k (" +
+        ? '<span class="cmeta">누적 ' + fmtNum(c.cum_tokens) + " " +
+          fmtNum(c.ctx_tokens) + "/" + fmtNum(limit) + " (" +
           (c.ctx_tokens * 100 / limit).toFixed(1) + "%)</span>"
         : "";
       const btns = '<span class="citembtns">' +
@@ -1611,7 +1784,7 @@
         '<span class="ctitle">' + (c.pinned ? '<span class="pinmark">' + ICON_PIN + "</span>" : "") +
         (c.model ? '<span class="mbadge">' + esc(c.model) + "</span> " : "") +
         (c.pending ? '<span class="spin"></span> ' : "") + esc(c.title) + "</span>" + btns + projTag +
-        '<span class="cmeta">' + Math.floor(c.count / 2) + "턴 · " +
+        '<span class="cmeta">' + Math.floor(c.count / 2) + "턴 " +
         esc((c.updated_at || "").slice(0, 16).replace("T", " ")) + "</span>" + tok + "</div>";
     };
     // 그룹: 고정됨 → 프로젝트(최신 대화 활동순 실시간 정렬) → 일반 대화
@@ -1633,34 +1806,151 @@
     if (pinned.length) html += '<div class="lsec">' + ICON_PIN + " 고정됨</div>" + pinned.map(itemHtml).join("");
     projOrder.forEach((pid) => {
       const upCount = allByProject[pid].length - byProject[pid].length; // 고정 섹션으로 올라간 수
-      html += '<div class="lsec proj"><span class="pname">' + ICON_FOLDER + " " + esc(projects[pid].name) +
+      const open = isProjectOpen(pid);
+      html += '<div class="lsec proj' + (state.viewProject === pid ? " cur" : "") + '">' +
+        '<button class="pcaret" data-ptoggle="' + esc(pid) + '" type="button" title="' +
+        (open ? "접기" : "펼치기") + '">' + (open ? "▾" : "▸") + "</button>" +
+        '<span class="pname" data-phome="' + esc(pid) + '" title="프로젝트 홈 열기">' +
+        ICON_FOLDER + " " + esc(projects[pid].name) +
         ' <span class="pcount">' + allByProject[pid].length +
         (upCount ? " <span class=\"pup\" title=\"고정되어 위에 표시 중\">↑" + upCount + "</span>" : "") + "</span></span>" +
         '<button class="iconbtn prename" data-pid="' + esc(pid) + '" type="button" title="프로젝트 이름 변경">' + ICON_EDIT + "</button>" +
         '<button class="iconbtn pdel" data-pid="' + esc(pid) + '" type="button" title="프로젝트 삭제 (대화는 최상위로 이동)">✕</button>' +
         '<span class="cmeta">' + esc(projTs(pid).slice(5, 16).replace("T", " ")) + "</span></div>" +
-        (byProject[pid].length
+        (!open ? "" : (byProject[pid].length
           ? byProject[pid].map(itemHtml).join("")
           : '<div class="empty pempty">' +
             (upCount ? "소속 대화가 모두 상단에 고정되어 있습니다"
-              : "대화를 이 프로젝트로 이동하세요 (대화 항목의 폴더 아이콘)") + "</div>");
+              : "대화를 이 프로젝트로 이동하세요 (대화 항목의 폴더 아이콘)") + "</div>"));
     });
     if (rest.length) {
       if (pinned.length || projOrder.length) html += '<div class="lsec">대화</div>';
       html += rest.map(itemHtml).join("");
     }
     box.innerHTML = html;
+    updateProjectRail();
   }
+
+  // ---- 프로젝트 홈: 프로젝트에 속한 대화를 한눈에 보고 새 대화를 시작하는 화면 ----
+  function openProjectHome(pid) {
+    if (!(state.projects || {})[pid]) return;
+    setSidebar(false);
+    state.viewProject = pid;
+    if (state.openProjects) delete state.openProjects[pid]; // 기본(열림)으로 되돌린다
+    renderChatList();
+    renderProjectHome();
+    pushRoute();
+  }
+
+  function closeProjectHome() {
+    if (!state.viewProject) return;
+    state.viewProject = null;
+    $("#project-home").hidden = true;
+    document.querySelector(".chatmain").classList.remove("projmode");
+    renderChatList();
+    pushRoute();
+  }
+
+  function renderProjectHome() {
+    const pid = state.viewProject;
+    const box = $("#project-home");
+    const main = document.querySelector(".chatmain");
+    const p = (state.projects || {})[pid];
+    if (!pid || !p) { box.hidden = true; main.classList.remove("projmode"); return; }
+    box.hidden = false;
+    main.classList.add("projmode"); // 대화 영역·입력창·전문 섹션을 숨긴다
+    const items = (state.chats || []).filter((c) => c.project === pid)
+      .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+    const turns = items.reduce((n, c) => n + Math.floor((c.count || 0) / 2), 0);
+    const tok = items.reduce((n, c) => n + (c.cum_tokens || 0), 0);
+    const last = items.length ? String(items[0].updated_at || "").slice(0, 16).replace("T", " ") : " ";
+    box.innerHTML =
+      '<div class="phome">' +
+      '<div class="phhead">' + ICON_FOLDER +
+      '<h3 class="phname">' + esc(p.name) + "</h3>" +
+      '<button class="iconbtn prename" data-pid="' + esc(pid) + '" type="button" title="프로젝트 이름 변경">' + ICON_EDIT + "</button>" +
+      '<span class="phspacer"></span>' +
+      '<button id="ph-new" class="insertbtn" type="button">＋ 이 프로젝트에서 새 대화</button>' +
+      '<button id="ph-close" class="small" type="button">닫기</button></div>' +
+      '<div class="phmeta">대화 ' + items.length + "개 누적 " + turns + "턴 " +
+      fmtNum(tok) + " tok 최근 활동 " + esc(last) +
+      (p.created_at ? " 생성 " + esc(String(p.created_at).slice(0, 16).replace("T", " ")) : "") + "</div>" +
+      (items.length
+        ? '<div class="phlist">' + items.map((c) =>
+          '<div class="phitem" data-chat="' + esc(c.id) + '">' +
+          '<span class="phtitle">' + (c.pinned ? '<span class="pinmark">' + ICON_PIN + "</span>" : "") +
+          (c.model ? '<span class="mbadge">' + esc(c.model) + "</span> " : "") + esc(c.title) + "</span>" +
+          '<span class="cmeta">' + Math.floor((c.count || 0) / 2) + "턴 " +
+          esc(String(c.updated_at || "").slice(0, 16).replace("T", " ")) +
+          (c.cum_tokens ? " " + fmtNum(c.cum_tokens) + " tok" : "") + "</span>" +
+          '<button class="iconbtn phout" data-cid="' + esc(c.id) + '" type="button" title="프로젝트에서 제거">✕</button>' +
+          "</div>").join("") + "</div>"
+        : '<div class="empty">아직 대화가 없습니다. 위 버튼으로 이 프로젝트에서 새 대화를 시작하세요.</div>') +
+      "</div>";
+  }
+
+  $("#project-home").addEventListener("click", async (e) => {
+    if (e.target.closest("#ph-close")) { closeProjectHome(); return; }
+    const rn = e.target.closest(".prename");
+    if (rn) {
+      const pid = rn.getAttribute("data-pid");
+      const cur = ((state.projects || {})[pid] || {}).name || "";
+      const next = window.prompt("프로젝트 이름을 변경합니다", cur);
+      if (next == null || !next.trim() || next.trim() === cur) return;
+      try {
+        await apiPost("api/project/rename", { id: pid, name: next.trim() });
+        await refreshChats();
+        renderProjectHome();
+        toast("프로젝트 이름을 변경했습니다");
+      } catch (err) { toast("이름 변경 실패: " + err.message); }
+      return;
+    }
+    if (e.target.closest("#ph-new")) {
+      // 이 프로젝트 소속으로 시작할 새 대화 — 첫 전송 후 자동으로 프로젝트에 넣는다
+      state.pendingProject = state.viewProject;
+      closeProjectHome();
+      state.chatId = null;
+      state.chatDoc = null;
+      $("#chat-system").value = DEFAULT_CHAT_SYSTEM;
+      renderChatList();
+      renderChatMessages();
+      $("#chat-input").focus();
+      toast("새 대화 첫 메시지를 보내면 이 프로젝트에 저장됩니다");
+      return;
+    }
+    const out = e.target.closest(".phout");
+    if (out) {
+      try {
+        await apiPost("api/chat/meta", { id: out.getAttribute("data-cid"), project: "" });
+        await refreshChats();
+        renderProjectHome();
+        toast("프로젝트에서 제거했습니다");
+      } catch (err) { toast("제거 실패: " + err.message); }
+      return;
+    }
+    const it = e.target.closest("[data-chat]");
+    if (it) {
+      closeProjectHome();
+      loadChatDoc(it.getAttribute("data-chat"));
+    }
+  });
 
   async function loadChatDoc(id) {
     try {
       state.chatDoc = await api("api/chat?id=" + encodeURIComponent(id));
-      if (state.chatId !== id) { state.editingIdx = null; state.ctxEditIdx = null; }
+      if (state.chatId !== id) {
+        state.editingIdx = null;
+        state.ctxEditIdx = null;
+        state.expandedMsgs = {}; // 대화가 바뀌면 펼침 상태 초기화 (인덱스 의미가 달라짐)
+        state.userScrolled = false; // 다른 대화를 열면 맨 아래(최신)부터 본다
+      }
       state.chatId = id;
       $("#chat-system").value = state.chatDoc.system != null && state.chatDoc.system !== ""
         ? state.chatDoc.system : DEFAULT_CHAT_SYSTEM;
       renderChatList();
       renderChatMessages();
+      const mini = document.getElementById("chat-title-mini");
+      if (mini) mini.textContent = state.chatDoc.title || "";
       restorePending(state.chatDoc); // 서버에 진행 중인 전송이 있으면 질문·타이머 복원 + 폴링
       pushRoute(); // 같은 대화 재로드면 hash 불변(no-op), 대화 이동이면 history entry 추가
     } catch (e) { toast("대화 로드 실패: " + e.message); }
@@ -1669,20 +1959,39 @@
   // 새로고침·재접속해도 진행 중 전송을 복원: 서버 _CHAT_PENDING 기반 렌더링 + 완료 폴링
   function restorePending(doc) {
     clearTimeout(state.pendingPollTimer);
-    if (!doc || !doc.pending || !state.chatId) return;
+    if (!doc || !doc.pending || !state.chatId) {
+      // 이 대화의 전송이 끝났으면 상태도 함께 해제 (서버가 단일 진실 원천)
+      if (state.tx && state.tx.chatId === state.chatId && !(doc && doc.pending)) setTx(null);
+      return;
+    }
     const p = doc.pending;
+    // 서버가 알려준 in-flight 전송을 그대로 상태로 복원 — 새로고침·재접속에도 정지 버튼 유지
+    setTx({ kind: p.edit_index != null ? "edit" : "send", chatId: state.chatId,
+            editIndex: p.edit_index, startedMs: Date.parse(p.ts) || Date.now(),
+            token: p.token || "" });
     const box = $("#chat-messages");
     if (!document.getElementById("chat-pending")) {
       if (box.querySelector(".empty")) box.innerHTML = "";
-      if (p.edit_index == null) {
-        box.insertAdjacentHTML("beforeend",
-          '<div class="msgwrap user" id="chat-just-sent"><div class="msg user">' + esc(p.message) + "</div></div>");
-      }
-      box.insertAdjacentHTML("beforeend",
+      // 질문 말풍선과 대기 표시를 한 줄로 — 대화와 같은 쪽(우측)에 붙이고 아랫변을 맞춘다
+      const row = (cls) => '<div class="pendrow' + cls + '">' +
         '<div class="msg pending" id="chat-pending"><span class="spin"></span> ' +
-        (p.edit_index != null ? "#" + p.edit_index + " 수정 재전송 — " : "") + "응답 대기 중 " +
-        timerHtml(Date.parse(p.ts) || Date.now()) + "</div>");
-      scrollMsgIntoTop(document.getElementById("chat-just-sent") || document.getElementById("chat-pending"));
+        (p.edit_index != null ? "#" + p.edit_index + " 수정 재전송 " : "") + "응답 대기 중 " +
+        timerHtml(Date.parse(p.ts) || Date.now()) + "</div>" +
+        '<div class="msgwrap user" id="chat-just-sent"><div class="msg user">' +
+        esc(p.message) + "</div></div></div>";
+      if (p.edit_index != null) {
+        // 수정 재전송은 그 대화 위치에서 진행 중이므로 대기 표시도 그 자리에 둔다.
+        // 수정 대상부터 뒤쪽 메시지는 곧 새 분기로 교체되므로 흐리게 표시한다.
+        const target = box.children[p.edit_index];
+        const doomed = [];
+        for (let i = p.edit_index; i < box.children.length; i++) doomed.push(box.children[i]);
+        if (target) target.insertAdjacentHTML("beforebegin", row(" atpos"));
+        else box.insertAdjacentHTML("beforeend", row(" atpos"));
+        doomed.forEach((el) => el.classList.add("superseded"));
+      } else {
+        box.insertAdjacentHTML("beforeend", row(""));
+      }
+      scrollMsgIntoTop(document.getElementById("chat-just-sent"));
     }
     const cid = state.chatId;
     state.pendingPollTimer = setTimeout(() => {
@@ -1691,20 +2000,51 @@
   }
 
   // ---- assistant 메시지 markdown 렌더링 (모든 조각을 esc() 후 변환 — XSS 안전) ----
+  // 수식 구간 정규식 — 순서 중요: $$ → \[ → \( → $.
+  // 예전 패턴은 \(f(x)\)처럼 안쪽에 괄호가 있으면 매칭에 실패해 수식이 깨졌다.
+  const MATH_RE = /\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$(?:\\.|[^$\\\n])+\$/g;
+
+  function unesc(t) {
+    return String(t).replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+  }
+
+  // 마스킹한 수식을 KaTeX HTML로 직접 변환한다. auto-render는 markdown 변환으로 텍스트
+  // 노드가 쪼개지면 구분자를 찾지 못해 문장 중간 수식을 놓치므로 여기서 확정적으로 렌더한다.
+  function renderMathSegment(raw) {
+    let tex = null, display = false;
+    if (/^\$\$[\s\S]*\$\$$/.test(raw)) { tex = raw.slice(2, -2); display = true; }
+    else if (/^\\\[[\s\S]*\\\]$/.test(raw)) { tex = raw.slice(2, -2); display = true; }
+    else if (/^\\\([\s\S]*\\\)$/.test(raw)) { tex = raw.slice(2, -2); }
+    else if (/^\$[\s\S]*\$$/.test(raw)) { tex = raw.slice(1, -1); }
+    if (tex === null || !tex.trim() || !window.katex) return raw;
+    try {
+      return window.katex.renderToString(unesc(tex), { displayMode: display, throwOnError: false });
+    } catch (e) {
+      return raw; // 렌더 실패 시 원문 유지 — auto-render가 한 번 더 시도한다
+    }
+  }
+
   function mdInline(s) {
     // s는 이미 esc()된 문자열. 수식 구간은 마스킹해 *·_ 등이 markdown으로 오변환되지 않게 보호
+    // 인라인 코드를 먼저 마스킹한다 — `$notmath$`처럼 코드 안의 $는 수식이 아니다
+    const codes = [];
+    s = s.replace(/`([^`]+)`/g, (_, c) => {
+      codes.push(c);
+      return "" + (codes.length - 1) + "";
+    });
     const masks = [];
-    s = s.replace(/\$\$[^$]+\$\$|\$[^$\n]+\$|\\\([^()]*?\\\)|\\\[[^\]]*?\\\]/g, (m) => {
+    s = s.replace(MATH_RE, (m) => {
       masks.push(m);
       return "" + (masks.length - 1) + "";
     });
-    s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
     s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     s = s.replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>");
     s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
     s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-    s = s.replace(/(\d+)/g, (_, n) => masks[Number(n)]);
+    s = s.replace(/(\d+)/g, (_, n) => renderMathSegment(masks[Number(n)]));
+    s = s.replace(/(\d+)/g, (_, n) => "<code>" + codes[Number(n)] + "</code>");
     return s;
   }
 
@@ -1780,7 +2120,7 @@
       if (lm && lm[3] !== "") {
         flushPara();
         (listItems = listItems || []).push({
-          indent: lm[1].replace(/\t/g, "  ").length,
+          indent: lm[1].replace(/\t/g, " ").length,
           type: /^[-*]$/.test(lm[2]) ? "ul" : "ol",
           content: lm[3],
         });
@@ -1812,39 +2152,279 @@
     return html;
   }
 
+  // 분기 트리용 시각 표기: yyyy.mm.dd HH:MM:SS (초까지, 폭을 줄이려고 구분자는 점)
+  function treeTs(ts) {
+    if (!ts) return "";
+    const t = String(ts).slice(0, 19).replace("T", " ");
+    return t.slice(0, 10).replace(/-/g, ".") + t.slice(10);
+  }
+
   function msgTs(ts) {
     return ts ? String(ts).slice(0, 16).replace("T", " ") : ""; // "YYYY-MM-DD HH:MM"
   }
 
+  // 프로그램이 옮긴 스크롤은 "사용자가 스크롤했다"로 오인하지 않도록 표시해 둔다
+  function markProgScroll() { state.progScrollUntil = Date.now() + 400; }
+
   function scrollMsgIntoTop(el) {
     const box = $("#chat-messages");
+    markProgScroll();
     if (!el) { box.scrollTop = box.scrollHeight; return; }
     box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - 4;
   }
+
+  // 사용자가 위로 스크롤해 다른 부분을 보고 있으면 자동 스크롤을 멈춘다(scroll anchoring).
+  // 맨 아래로 돌아오면 다시 따라가기(follow) 모드로 복귀한다.
+  $("#chat-messages").addEventListener("scroll", () => {
+    updateJumpButtons();
+    if (Date.now() < (state.progScrollUntil || 0)) return; // 프로그램 스크롤은 무시
+    const box = $("#chat-messages");
+    state.userScrolled = box.scrollHeight - box.scrollTop - box.clientHeight > 24;
+  }, { passive: true });
+
+  // 스크롤 점프 버튼 — 스크롤할 여지가 있을 때만 반투명으로 겹쳐 보인다
+  function updateJumpButtons() {
+    const box = $("#chat-messages");
+    const jump = document.getElementById("chat-jump");
+    if (!jump) return;
+    const scrollable = box.scrollHeight - box.clientHeight > 40;
+    jump.hidden = !scrollable;
+    if (!scrollable) return;
+    // 대화창 아랫변에서 살짝 띄운다 — 입력창·경계에 걸쳐 잘리지 않도록 실측으로 맞춘다
+    const main = jump.offsetParent;
+    if (main) {
+      const gap = main.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;
+      jump.style.bottom = Math.round(gap + 14) + "px";
+    }
+    const atTop = box.scrollTop <= 4;
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight <= 4;
+    jump.querySelector('[data-jump="top"]').disabled = atTop;
+    jump.querySelector('[data-jump="bottom"]').disabled = atBottom;
+  }
+
+  document.getElementById("chat-jump").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-jump]");
+    if (!b) return;
+    const box = $("#chat-messages");
+    markProgScroll();
+    if (b.getAttribute("data-jump") === "top") {
+      box.scrollTop = 0;
+      state.userScrolled = true;  // 위를 보고 있으므로 자동 스크롤 중단
+    } else {
+      box.scrollTop = box.scrollHeight;
+      state.userScrolled = false; // 맨 아래 = 따라가기 모드 복귀
+    }
+    updateJumpButtons();
+  });
 
   // ChatGPT 차용 아이콘 (복사·수정)
   const ICON_COPY = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
   const ICON_EDIT = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>';
 
+  // ---- 모델 추가 설정(extra payload): temperature · reasoning_effort ----
+  // 모델이 지원하는 값 목록이 있을 때만 활성화되고, 선택 시 요청 payload에 실린다.
+  function modelOptsFor(model) {
+    const o = (state.modelOptions || {})[model] || {};
+    return { temperature: o.temperature || [], reasoning_effort: o.reasoning_effort || [] };
+  }
+
+  // 옵션 바 정의 — 대화 입력창과 과거 대화 수정 상자가 같은 스펙을 공유한다(패턴화).
+  // 레이블은 컨트롤 밖에 항상 표시하고, 드롭다운 안에는 유효한 값만 둔다.
+  // 값을 고른 뒤에도 무엇을 고른 것인지 알 수 있어야 하기 때문(model은 값 자체가 자명해 레이블 생략).
+  const OPT_FIELDS = [
+    { id: "model", param: "model", label: "",
+      title: "이 요청에 사용할 모델" },
+    { id: "temp", param: "temperature", label: "temp",
+      title: "temperature 낮을수록 결정적, 높을수록 다양한 표현 (요청 payload에 포함)" },
+    { id: "reason", param: "reasoning_effort", label: "reasoning",
+      title: "reasoning effort 추론에 들이는 강도 (요청 payload에 포함)" },
+  ];
+  const OPT_DEFAULT_LABEL = "기본값"; // 파라미터를 보내지 않음 — 무효값이 아니라 유효한 선택
+
+  function optbarHtml(prefix) {
+    return OPT_FIELDS.map((f) =>
+      '<span class="optfield" id="' + prefix + "-" + f.id + '-wrap">' +
+      (f.label ? '<label class="optlabel" for="' + prefix + "-" + f.id + '">' + esc(f.label) + "</label>" : "") +
+      '<select id="' + prefix + "-" + f.id + '" class="optsel" aria-label="' + esc(f.label || "model") + '"></select>' +
+      "</span>").join("");
+  }
+
+  // select를 채우고, 모델이 지원하지 않는 항목은 필드 전체를 비활성 표시로 전환
+  function wireOptbar(prefix, cur) {
+    cur = cur || {};
+    const el = (id) => document.getElementById(prefix + "-" + id);
+    const mSel = el("model");
+    if (!mSel) return;
+    mSel.innerHTML = (state.modelList || []).map((m) =>
+      '<option value="' + esc(m) + '">' + esc(m) + "</option>").join("");
+    mSel.value = cur.model || state.defaultModel || (state.modelList || [])[0] || "";
+    mSel.title = OPT_FIELDS[0].title;
+    const apply = () => {
+      const opts = modelOptsFor(mSel.value);
+      OPT_FIELDS.slice(1).forEach((f) => {
+        const sel = el(f.id);
+        const wrap = el(f.id + "-wrap");
+        if (!sel) return;
+        const list = opts[f.param] || [];
+        // 드롭다운에는 유효 값만 — 맨 위 '기본값'은 파라미터 미전송을 뜻한다
+        sel.innerHTML = '<option value="">' + OPT_DEFAULT_LABEL + "</option>" +
+          list.map((v) => '<option value="' + esc(v) + '">' + esc(v) + "</option>").join("");
+        sel.disabled = !list.length;
+        const tip = list.length ? f.title
+          : mSel.value + " 모델은 " + f.param + " 설정을 제공하지 않습니다";
+        sel.title = tip;
+        if (wrap) { wrap.classList.toggle("off", !list.length); wrap.title = tip; }
+        const want = cur[f.param];
+        if (want && list.indexOf(String(want)) >= 0) sel.value = String(want);
+      });
+    };
+    apply();
+    mSel.addEventListener("change", apply);
+  }
+
+  function readOptbar(prefix) {
+    const el = (id) => document.getElementById(prefix + "-" + id);
+    const out = { model: el("model") ? el("model").value : $("#model").value };
+    OPT_FIELDS.slice(1).forEach((f) => {
+      const sel = el(f.id);
+      if (sel && !sel.disabled && sel.value) out[f.param] = sel.value;
+    });
+    return out;
+  }
+
+  function initChatOptbar() {
+    const bar = document.getElementById("chat-optbar");
+    if (bar && !bar.querySelector("select")) bar.innerHTML = optbarHtml("chat");
+    wireOptbar("chat", { model: $("#model").value || state.defaultModel });
+  }
+
+  // ChatGPT식 아이콘: 보내기(위 화살표) / 정지(사각형)
+  const ICON_SEND = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20V5"/><path d="M5.5 11.5 12 5l6.5 6.5"/></svg>';
+  const ICON_STOP = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2"></rect></svg>';
+
+  // 전송/정지 버튼 패턴 — 대화 입력창과 과거 대화 수정 상자가 같은 마크업·상태 전환을 공유한다
+  function sendBtnHtml(id, label) {
+    return '<button id="' + id + '" class="iconsend" type="button" title="' + esc(label) +
+      '" aria-label="' + esc(label) + '">' + ICON_SEND + "</button>";
+  }
+
+  function setSendBtnMode(btn, mode) { // mode: "send" | "stop"
+    if (!btn) return;
+    const stop = mode === "stop";
+    btn.classList.add("iconsend");
+    btn.classList.toggle("stopbtn", stop);
+    btn.innerHTML = stop ? ICON_STOP : ICON_SEND;
+    btn.title = stop ? "전송 정지 진행 중인 LLM 응답 생성을 중단합니다" : "보내기 (Ctrl+Enter)";
+    btn.setAttribute("aria-label", stop ? "전송 정지" : "보내기");
+    btn.disabled = false;
+  }
+
+  // ---- 전송 상태(tx) 관리 ----------------------------------------------------
+  // 단일 진실 원천은 "서버의 in-flight 전송"이다. 로컬 변수만 쓰면 새로고침에서 상태가
+  // 사라지므로(정지 버튼이 보내기로 되돌아감), 서버 pending을 읽어 같은 형태로 복원한다.
+  //   state.tx = { kind: "send"|"edit", chatId, editIndex, startedMs, token } | null
+  // 화면 반영은 renderTxState() 한 곳에서만 한다 — 버튼·상태문구·가드가 항상 같은 상태를 본다.
+  function setTx(tx) {
+    state.tx = tx || null;
+    renderTxState();
+  }
+
+  function txActive() {
+    return !!state.tx;
+  }
+
+  function renderTxState() {
+    const tx = state.tx;
+    // 다른 대화의 전송이면 이 화면의 버튼은 평소 상태로 둔다 (화면을 뺏지 않는 규칙과 동일)
+    const here = !!tx && (!tx.chatId || tx.chatId === state.chatId);
+    state.sending = !!tx;        // 기존 가드 호환 (수정·분기 전환 잠금)
+    state.sendToken = tx ? tx.token : null;
+    state.sendingChatId = tx ? tx.chatId : null;
+    setSendBtnMode($("#chat-send"), here ? "stop" : "send");
+    // 수정 상자가 열려 있으면 그 버튼·상태 문구도 같은 상태를 따른다
+    const eb = document.getElementById("edit-msg-send");
+    const st = document.getElementById("edit-msg-status");
+    const editing = here && tx && tx.kind === "edit";
+    if (eb) setSendBtnMode(eb, editing ? "stop" : "send");
+    if (st) {
+      st.innerHTML = editing
+        ? '<span class="spin"></span> 응답 대기 중 ' + timerHtml(tx.startedMs || Date.now())
+        : "";
+    }
+  }
+
+  async function cancelSend() {
+    if (!state.sending) return;
+    const btn = $("#chat-send");
+    btn.disabled = true;
+    try {
+      const r = await apiPost("api/chat/cancel",
+        { id: state.sendingChatId || "", token: state.sendToken || "" });
+      toast(r.cancelled ? "정지 요청을 보냈습니다 응답을 저장하지 않습니다" : "진행 중인 전송이 없습니다");
+    } catch (e) {
+      toast("정지 실패: " + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // 발신자 표시 — 내가 보낸 메시지는 생략하고 상대(모델·다른 사람)만 적는다.
+  // 향후 여러 사람·여러 모델이 한 대화에 참여하는 그룹 채팅을 염두에 둔 규칙:
+  // 메시지에 name/user가 있으면 그 값을, 없으면 assistant는 모델명을 발신자로 쓴다.
+  function senderLabel(m) {
+    if (!m) return "";
+    if (m.role === "user") {
+      const who = m.name || m.user || "";
+      return who && who !== state.user ? who : ""; // 내 메시지는 생략
+    }
+    return m.name || m.model || "assistant";
+  }
+
+  // 메시지 분량 — 글자 수(코드포인트 기준)와 UTF-8 바이트 용량. 보낸·받은 메시지 모두 표시
+  // 큰 수를 3자리 단위(k M G T)로 압축 표기 - 가로폭을 아끼기 위해
+  function fmtNum(n) {
+    const v = Number(n) || 0;
+    const units = [["T", 1e12], ["G", 1e9], ["M", 1e6], ["k", 1e3]];
+    for (let i = 0; i < units.length; i++) {
+      const u = units[i][0], base = units[i][1];
+      if (v >= base) {
+        const x = v / base;
+        return (x >= 100 ? String(Math.round(x)) : x.toFixed(1).replace(/\.0$/, "")) + u;
+      }
+    }
+    return String(v);
+  }
+
+  function sizeMeta(text) {
+    const s = String(text || "");
+    const chars = Array.from(s).length;
+    const bytes = new TextEncoder().encode(s).length;
+    const size = bytes < 1024 ? bytes.toLocaleString() + " B" : (bytes / 1024).toFixed(1) + " KB";
+    return chars.toLocaleString() + "자 " + size;
+  }
+
   function msgHtml(m, i) {
     const role = m.role === "user" ? "user" : "assistant";
     const ts = msgTs(m.ts);
     const editedMark = m.edited_at
-      ? ' <span class="edited" title="수정: ' + esc(msgTs(m.edited_at)) + '">수정됨</span>' : "";
+      ? '<span class="capi edited" title="수정: ' + esc(msgTs(m.edited_at)) + '">수정됨</span>' : "";
     // context 편집 모드: LLM 재전송 없이 내용만 제자리 수정 (user·assistant 모두 가능)
     if (state.ctxEditIdx === i) {
-      return '<div class="msgwrap ' + role + '"><div class="msgedit">' +
+      return '<div class="msgwrap editing ' + role + '"><div class="msgedit">' +
         '<textarea id="ctx-edit-ta" spellcheck="false">' + esc(m.content) + "</textarea>" +
-        '<div class="editbtns"><span class="hint" style="margin-right:auto">LLM 재전송 없음 — 다음 질문부터 수정된 context가 반영됩니다</span>' +
+        '<div class="editbtns"><button type="button" class="infotip" style="margin-right:auto" aria-label="설명" data-tip="LLM 재전송 없이 이력만 교체합니다. 다음 질문부터 수정된 context가 반영됩니다.">i</button>' +
         '<button id="ctx-edit-cancel" class="small" type="button">취소</button>' +
         '<button id="ctx-edit-save" class="insertbtn" type="button">수정 저장</button></div></div></div>';
     }
     // 수정 모드: 그 질문 box 안에서 편집 + 취소/전송 버튼
     if (role === "user" && state.editingIdx === i) {
-      return '<div class="msgwrap user"><div class="msgedit">' +
+      // 수정 후 재전송: 모델·추가 설정(temp·reasoning)을 여기서도 지정할 수 있다
+      return '<div class="msgwrap editing user"><div class="msgedit">' +
+        '<div class="optbar">' + optbarHtml("edit") + "</div>" +
         '<textarea id="edit-msg-ta" spellcheck="false">' + esc(m.content) + "</textarea>" +
-        '<div class="editbtns"><button id="edit-msg-cancel" class="small" type="button">취소</button>' +
-        '<button id="edit-msg-send" class="insertbtn" type="button">전송</button></div></div></div>';
+        '<div class="editbtns"><span id="edit-msg-status" class="hint"></span>' +
+        '<button id="edit-msg-cancel" class="small" type="button">취소</button>' +
+        sendBtnHtml("edit-msg-send", "전송") + "</div></div></div>";
     }
     let cap = "";
     if (role === "user") {
@@ -1854,28 +2434,88 @@
           (entry.active + 1) + "/" + entry.variants.length +
           '<button class="bstep" data-bi="' + i + '" data-dir="1" type="button">&#9654;</button></span>';
       }
-      cap += (cap ? " " : "") + esc(ts) + editedMark +
-        ' <button class="iconbtn copymsg" data-mi="' + i + '" type="button" title="메시지 복사">' + ICON_COPY + "</button>" +
+      cap += '<span class="capi">' + esc(ts) + "</span>" + editedMark +
+        '<span class="capi msize">' + esc(sizeMeta(m.content)) + "</span>" +
+        '<span class="mtoggleslot"></span>' +
+        '<button class="iconbtn copymsg" data-mi="' + i + '" type="button" title="메시지 복사">' + ICON_COPY + "</button>" +
         '<button class="iconbtn editmsg" data-mi="' + i + '" type="button" title="수정 후 재전송 (분기 생성)">' + ICON_EDIT + "</button>";
     } else {
-      cap = esc(ts) + editedMark;
       const u = m.usage || {};
-      if (m.model) cap += (cap ? " · " : "") + esc(m.model);
-      if (m.latency_ms) cap += " · " + (m.latency_ms / 1000).toFixed(1) + "초";
+      const parts = [esc(ts), esc(sizeMeta(m.content))];
+      // 모델명은 말풍선 위 발신자 표시와 겹치므로 다를 때만 캡션에 남긴다
+      if (m.model && m.model !== senderLabel(m)) parts.push(esc(m.model));
+      if (m.latency_ms) parts.push((m.latency_ms / 1000).toFixed(1) + "초");
       if (u.prompt_tokens || u.completion_tokens) {
-        cap += " · in " + (u.prompt_tokens || 0).toLocaleString() +
-          " / out " + (u.completion_tokens || 0).toLocaleString() + " tok";
+        parts.push("in " + fmtNum(u.prompt_tokens || 0) + " / out " + fmtNum(u.completion_tokens || 0) + " tok");
       }
-      cap += ' <button class="iconbtn copymsg" data-mi="' + i + '" type="button" title="답변 전체 복사">' + ICON_COPY + "</button>";
+      cap = parts.map((t) => '<span class="capi">' + t + "</span>").join("") + editedMark +
+        '<span class="mtoggleslot"></span>' +
+        '<button class="iconbtn copymsg" data-mi="' + i + '" type="button" title="답변 전체 복사">' + ICON_COPY + "</button>";
     }
     // metadata(시각·모델·토큰)는 말풍선 밖 캡션으로. assistant는 markdown 렌더링
     const body = role === "assistant" ? renderMarkdown(m.content) : esc(m.content);
-    return '<div class="msgwrap ' + role + '"><div class="msg ' + role + '">' + body + "</div>" +
+    const who = senderLabel(m);
+    return '<div class="msgwrap ' + role + '" data-mi="' + i + '">' +
+      (who ? '<div class="sender">' + esc(who) + "</div>" : "") +
+      '<div class="msg ' + role + '">' + body + "</div>" +
       (cap ? '<div class="mcap">' + cap + "</div>" : "") + "</div>";
+  }
+
+  // 긴 질문·답변은 기본 150px로 접어 두고 버튼으로 펼친다 (펼침 상태는 대화별로 기억)
+  const MSG_COLLAPSE_PX = 150;
+
+  function applyMsgCollapse() {
+    const box = $("#chat-messages");
+    const expanded = state.expandedMsgs || (state.expandedMsgs = {});
+    box.querySelectorAll(".msgwrap[data-mi]").forEach((wrap) => {
+      const msg = wrap.querySelector(".msg");
+      if (!msg) return;
+      const key = wrap.getAttribute("data-mi");
+      const slot = wrap.querySelector(".mtoggleslot");
+      if (slot) slot.innerHTML = "";
+      const put = (label) => {
+        const html = '<button class="msgtoggle" type="button" data-toggle="' + key + '">' + label + "</button>";
+        if (slot) slot.innerHTML = html;
+        else wrap.insertAdjacentHTML("beforeend", html);
+      };
+      msg.classList.remove("clamped");
+      if (expanded[key]) { put("접기 ▴"); return; }
+      if (msg.scrollHeight > MSG_COLLAPSE_PX + 8) {
+        msg.classList.add("clamped");
+        put("펼치기 ▾");
+      }
+    });
+    syncBottomSpacer();  // 마지막 질문도 맨 위까지 올릴 수 있도록 아래 여백 확보
+    updateJumpButtons(); // 높이가 바뀌었으므로 스크롤 점프 버튼 표시도 갱신
+  }
+
+  // 마지막 턴(질문+답변)이 화면보다 짧으면 그 질문을 상단까지 스크롤할 수 없다.
+  // ChatGPT처럼 목록 끝에 여백을 두어 어떤 질문이든 맨 위에 놓을 수 있게 한다.
+  function syncBottomSpacer() {
+    const box = $("#chat-messages");
+    let sp = box.querySelector(".msgspacer");
+    const wraps = [...box.querySelectorAll(".msgwrap[data-mi]")];
+    if (!wraps.length) { if (sp) sp.remove(); return; }
+    let lastQ = null;
+    for (let i = wraps.length - 1; i >= 0; i--) {
+      if (wraps[i].classList.contains("user")) { lastQ = wraps[i]; break; }
+    }
+    const from = lastQ || wraps[wraps.length - 1];
+    if (!sp) {
+      sp = document.createElement("div");
+      sp.className = "msgspacer";
+      box.appendChild(sp);
+    } else {
+      box.appendChild(sp); // 항상 맨 끝 유지
+    }
+    sp.style.height = "0px";
+    const tail = box.scrollHeight - (from.offsetTop - box.offsetTop);
+    sp.style.height = Math.max(0, Math.round(box.clientHeight - tail - 8)) + "px";
   }
 
   function renderChatMessages() {
     const box = $("#chat-messages");
+    const prevTop = box.scrollTop; // 사용자가 보던 위치 보존용
     const msgs = (state.chatDoc && state.chatDoc.messages) || [];
     box.innerHTML = msgs.length
       ? msgs.map((m, i) => msgHtml(m, i)).join("")
@@ -1897,23 +2537,32 @@
             { left: "$", right: "$", display: false },
           ],
           ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
+          ignoredClasses: ["katex"], // mdInline이 이미 렌더한 수식은 다시 건드리지 않는다
           throwOnError: false,
         });
       } catch (e) { /* 수식 렌더 실패는 무시 */ }
     }
+    applyMsgCollapse(); // 접기 상태 적용 — 스크롤 앵커 계산 전에 높이를 확정한다
+    renderTxState();    // 새로 그려진 수정 상자 버튼에도 현재 전송 상태를 반영
     // 스크롤: 방금 보낸 질문이 있으면 그 질문을 상단에 앵커 (답변을 처음부터 읽도록),
     // 아니면 맨 아래로
-    if (state.scrollAnchor != null) {
+    const anchor = state.scrollAnchor;
+    state.scrollAnchor = null;
+    if (state.userScrolled) {
+      // 사용자가 보고 있는 위치를 고정 — 답변이 도착해도 화면은 그대로이고 스크롤바만 작아진다
+      markProgScroll();
+      box.scrollTop = prevTop;
+    } else if (anchor != null) {
       let target = null;
-      if (state.scrollAnchor === "last-user") {
+      if (anchor === "last-user") {
         const users = box.querySelectorAll(".msgwrap.user");
         target = users[users.length - 1];
       } else {
-        target = box.children[state.scrollAnchor];
+        target = box.children[anchor];
       }
-      state.scrollAnchor = null;
       scrollMsgIntoTop(target);
     } else {
+      markProgScroll();
       box.scrollTop = box.scrollHeight;
     }
     // 누적 토큰 · 컨텍스트(마지막 요청 규모) / 한계 · 사용률
@@ -1927,17 +2576,18 @@
     });
     const limit = state.contextLimit || 200000;
     $("#chat-stats").textContent = msgs.length && cum
-      ? "누적 " + cum.toLocaleString() + " tok · 컨텍스트 " + ctx.toLocaleString() + " / " +
-        limit.toLocaleString() + " (" + (ctx * 100 / limit).toFixed(1) + "%)"
+      ? "누적 " + fmtNum(cum) + " 컨텍스트 " + fmtNum(ctx) + "/" + fmtNum(limit) +
+        " (" + (ctx * 100 / limit).toFixed(1) + "%)"
       : "";
     renderChatRequest();
     renderChatTree();
   }
 
-  function buildRequestPreview(msg) {
+  function buildRequestPreview(msg, opts) {
     // 전송 버튼 클릭 직후 즉시 렌더링할 요청 재구성 — 서버 저장본(last_request)과 동일 구조
     const cfg = state.llmConfig || {};
-    const model = $("#model").value || cfg.model || "sonnet";
+    opts = opts || {};
+    const model = opts.model || $("#model").value || cfg.model || "sonnet";
     const url = cfg.url && String(cfg.url).trim()
       ? String(cfg.url).trim()
       : String(cfg.base_url || "http://127.0.0.1:8820").replace(/\/+$/, "") + "/" + model + "/v1/chat/completions";
@@ -1948,6 +2598,9 @@
     msgs.push({ role: "user", content: msg });
     const payload = { model: model, messages: msgs };
     if (cfg.extra_payload && typeof cfg.extra_payload === "object") Object.assign(payload, cfg.extra_payload);
+    // 모델 추가 설정도 extra payload처럼 실린다
+    if (opts.temperature) payload.temperature = parseFloat(opts.temperature);
+    if (opts.reasoning_effort) payload.reasoning_effort = opts.reasoning_effort;
     return {
       method: "POST", url: url, model: model, payload: payload,
       payload_bytes: new TextEncoder().encode(JSON.stringify(payload)).length,
@@ -2011,6 +2664,21 @@
       }
     }
     walk(doc.messages, doc.alts || {}, 0, 0, true, null, null, []);
+    // 보기 옵션: 구조순(기본, 분기 트리 순서) / 시간순(모든 가지를 timestamp로 재배치).
+    // 레인(가지)과 부모 연결은 그대로 두고 행 순서만 바꾸므로 어느 뷰에서도 계보가 유지된다.
+    const timeView = state.treeOrder === "time";
+    if (timeView) {
+      const order = rows.map((r, i) => i)
+        .sort((a, b) => String(rows[a].msg.ts || "").localeCompare(String(rows[b].msg.ts || "")) || a - b);
+      const newIdx = {};
+      order.forEach((oldI, ni) => { newIdx[oldI] = ni; });
+      const sorted = order.map((i) => rows[i]);
+      sorted.forEach((r) => {
+        if (r.connect) r.connect = { lane: r.connect.lane, row: newIdx[r.connect.row] };
+      });
+      rows.length = 0;
+      sorted.forEach((r) => rows.push(r));
+    }
     state.treeRows = rows;
 
     // 2) SVG 레일·곡선·노드
@@ -2025,6 +2693,26 @@
     // 접두뿐이므로 [활성 run]+[비활성 run] 최대 2개의 이어진 경로로 그린다 — 끊김 없음.
     const lanes = {};
     rows.forEach((r, ri) => { (lanes[r.lane] = lanes[r.lane] || []).push({ r: r, ri: ri }); });
+    if (timeView) {
+      // 시간순: 같은 레인의 연속한 두 노드를 잇는 선분 + 부모에서 들어오는 대각선
+      Object.keys(lanes).map(Number).sort((a, b) => a - b).forEach((ln) => {
+        const list = lanes[ln];
+        const color = LANE_COLORS[ln % LANE_COLORS.length];
+        const seg = (d, act) => {
+          svg += '<path d="' + d + '" stroke="' + color + '" stroke-width="' + (act ? 3.2 : 1.8) +
+            '" fill="none" opacity="' + (act ? 1 : 0.5) +
+            '" stroke-linecap="round" stroke-linejoin="miter"/>';
+        };
+        const conn = list[0].r.connect;
+        if (conn && conn.lane !== ln) {
+          seg("M" + X(conn.lane) + " " + Y(conn.row) + " L" + X(ln) + " " + Y(list[0].ri), list[0].r.active);
+        }
+        for (let k = 1; k < list.length; k++) {
+          seg("M" + X(ln) + " " + Y(list[k - 1].ri) + " L" + X(ln) + " " + Y(list[k].ri),
+            list[k - 1].r.active && list[k].r.active);
+        }
+      });
+    } else
     Object.keys(lanes).map(Number).sort((a, b) => a - b).forEach((ln) => {
       const list = lanes[ln];
       const xTop = X(ln);
@@ -2073,14 +2761,21 @@
 
     // 3) 행 라벨 — 분기점 pill은 상태 표지(버튼 아님). 전환은 행 자체를 클릭(= checkout).
     const tipIdx = (doc.messages || []).length - 1;
+    const flat = (s, n) => String(s || "").replace(/\s+/g, " ").trim().slice(0, n);
     const rowsHtml = rows.map((r, ri) => {
       const m = r.msg;
-      const preview = String(m.content || "").replace(/\s+/g, " ").slice(0, 64);
+      // 요약: 답변 행은 [질문 앞부분 → 답변 앞부분]으로 한 턴을 함께 보여준다
+      let preview = flat(m.content, 64);
+      if (m.role === "assistant") {
+        const prevRow = rows[ri - 1];
+        const q = prevRow && prevRow.msg.role === "user" ? flat(prevRow.msg.content, 30) : "";
+        preview = (q ? q + " → " : "") + flat(m.content, q ? 40 : 64);
+      }
       let meta = "";
       if (m.role === "assistant") {
         const u = m.usage || {};
         if (m.model) meta += m.model;
-        if (u.total_tokens) meta += (meta ? " · " : "") + u.total_tokens.toLocaleString() + "tok";
+        if (u.total_tokens) meta += (meta ? " " : "") + fmtNum(u.total_tokens) + "tok";
       }
       // 칩 색 = 그 가지의 레인 색 (테두리·글자·레일·노드 통일, 레인 수 초과 시 색 loop)
       const laneStroke = LANE_COLORS[r.lane % LANE_COLORS.length];
@@ -2089,41 +2784,70 @@
         ? '<span class="tpill' + (onPath ? " on" : "") + '" style="color:' + laneStroke +
           ";border-color:" + laneStroke + (onPath ? ";background:" + laneStroke + "1f" : "") +
           '" title="#' + r.branch.bi + ' 지점의 가지 ' + (r.branch.j + 1) + "/" + r.branch.total +
-          (onPath ? " — 현재 대화"
-            : r.branch.isActive ? " — 이 지점의 선택된 가지 (상위 가지가 비활성) · 행 클릭으로 전환"
-              : " — 행을 클릭하면 이 가지로 전환") + '">' +
+          (onPath ? " 현재 대화"
+            : r.branch.isActive ? " 이 지점의 선택된 가지 (상위 가지가 비활성) 행 클릭으로 전환"
+              : " 행을 클릭하면 이 가지로 전환") + '">' +
           (r.branch.j + 1) + "/" + r.branch.total + "</span>"
         : "";
       const headMark = r.active && r.absIdx === tipIdx ? '<span class="tcur">현재</span>' : "";
       // 활성 경로 메시지만 context 편집 가능 (chat.messages 인덱스와 일치)
       const editBtn = r.active
         ? '<button class="tedit" data-cedit="' + r.absIdx +
-          '" type="button" title="내용 직접 수정 — LLM 재전송 없이 context만 교체">' + ICON_EDIT + "</button>"
+          '" type="button" title="내용 직접 수정 LLM 재전송 없이 context만 교체">' + ICON_EDIT + "</button>"
         : "";
       // 표기 순서: [분기 pill] timestamp → 편집 → #번호 → 대화요약 → (우측) 현재·모델·토큰
       return '<div class="trow' + (r.active ? " act" : " dim") + '" data-ri="' + ri +
         '" style="height:' + rowH + 'px" title="' +
-        esc((r.active ? "" : "클릭: 이 가지로 전환\n") + String(m.content || "").slice(0, 300)) + '">' +
-        pill + '<span class="tts">' + esc(msgTs(m.ts)) + "</span>" + editBtn +
-        '<span class="tidx">#' + r.absIdx + "</span>" +
+        esc((r.active ? "" : "클릭: 이 가지로 전환\n") +
+          (m.role === "assistant" && rows[ri - 1] && rows[ri - 1].msg.role === "user"
+            ? "Q: " + flat(rows[ri - 1].msg.content, 200) + "\nA: " : "") +
+          String(m.content || "").slice(0, 300)) + '">' +
+        // 열을 고정 폭 셀로 분리한다: 분기 chip | 시각 | 편집 | #번호 | 요약 | 메타
+        '<span class="tcell tts">' + esc(treeTs(m.ts)) + "</span>" +
+        '<span class="tcell tedcell">' + editBtn + "</span>" +
+        '<span class="tcell tpillcell">' + pill + "</span>" +
+        '<span class="tcell tidx">#' + r.absIdx + "</span>" +
         '<span class="tprev">' + esc(preview) + "</span>" +
-        (headMark || meta
-          ? '<span class="tmeta">' + headMark + (headMark && meta ? " · " : "") + esc(meta) + "</span>" : "") +
+        '<span class="tmeta">' + headMark + (headMark && meta ? " " : "") + esc(meta) + "</span>" +
         "</div>";
     }).join("");
 
-    box.innerHTML = '<div class="hint treehint">굵게 표시된 경로가 지금 보고 있는 대화입니다. ' +
-      '흐린 행을 클릭하면 그 가지로 전환됩니다 — git checkout처럼 그래프 모양과 색은 그대로, 굵기만 이동합니다.</div>' +
-      '<div class="tgraph">' +
+    const tipBox = document.getElementById("chat-tree-box");
+    // 보기 전환 버튼 (구조순 / 시간순)
+    if (tipBox && !tipBox.querySelector(".tviews")) {
+      tipBox.querySelector("summary").insertAdjacentHTML("beforeend",
+        '<span class="tviews">' +
+        '<button type="button" class="tvbtn" data-tview="struct" title="분기 구조 순서로 보기">구조순</button>' +
+        '<button type="button" class="tvbtn" data-tview="time" title="모든 가지를 시각 순서로 보기">시간순</button></span>');
+    }
+    if (tipBox) {
+      tipBox.querySelectorAll(".tvbtn").forEach((b) => {
+        b.classList.toggle("on", b.getAttribute("data-tview") === (state.treeOrder || "struct"));
+      });
+    }
+    if (tipBox && !tipBox.querySelector(".infotip")) {
+      tipBox.querySelector("summary").insertAdjacentHTML("beforeend",
+        '<button type="button" class="infotip" aria-label="설명" data-tip="굵게 표시된 경로가 지금 보고 있는 대화입니다. 흐린 행을 클릭하면 그 가지로 전환됩니다. git checkout처럼 그래프 모양과 색은 그대로이고 굵기만 이동합니다.">i</button>');
+    }
+    box.innerHTML = '<div class="tgraph">' +
       '<svg width="' + gutter + '" height="' + H + '" class="tsvg">' + svg + "</svg>" +
       '<div class="trows" style="margin-left:' + gutter + 'px">' + rowsHtml + "</div></div>";
   }
+
+  document.getElementById("chat-tree-box").addEventListener("click", (e) => {
+    const b = e.target.closest(".tvbtn");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    state.treeOrder = b.getAttribute("data-tview");
+    renderChatTree();
+  });
 
   document.getElementById("chat-tree").addEventListener("click", async (e) => {
     const te = e.target.closest(".tedit");
     if (te) {
       e.preventDefault();
-      if ($("#chat-send").disabled) { toast("응답 대기 중에는 수정할 수 없습니다"); return; }
+      if (state.sending) { toast("응답 대기 중에는 수정할 수 없습니다"); return; }
       state.editingIdx = null;
       state.ctxEditIdx = Number(te.getAttribute("data-cedit"));
       renderChatMessages();
@@ -2138,18 +2862,26 @@
     const row = (state.treeRows || [])[Number(rowEl.getAttribute("data-ri"))];
     if (!row) return;
     if (row.active) {
-      // 활성 경로 행: 해당 메시지로 스크롤
-      const el = $("#chat-messages").children[row.absIdx];
-      if (el) {
-        scrollMsgIntoTop(el);
-        el.classList.add("flash");
-        setTimeout(() => el.classList.remove("flash"), 1200);
+      // 활성 경로 행: 그 대화가 시작된 "질문"이 맨 위에 오도록 스크롤한다.
+      // 답변 행을 눌러도 앞선 질문부터 읽을 수 있게 하기 위함.
+      const msgs = (state.chatDoc && state.chatDoc.messages) || [];
+      let qIdx = row.absIdx;
+      while (qIdx > 0 && (msgs[qIdx] || {}).role !== "user") qIdx -= 1;
+      const box = $("#chat-messages");
+      const anchor = box.querySelector('.msgwrap[data-mi="' + qIdx + '"]');
+      const target = box.querySelector('.msgwrap[data-mi="' + row.absIdx + '"]');
+      if (anchor) scrollMsgIntoTop(anchor);
+      if (target) { // 실제로 누른 메시지를 잠깐 강조
+        target.classList.add("flash");
+        setTimeout(() => target.classList.remove("flash"), 1200);
       }
+      // 특정 지점을 보고 있으므로 새 응답이 와도 화면을 뺏지 않는다 (마지막 턴 제외)
+      state.userScrolled = row.absIdx < msgs.length - 1;
       return;
     }
     // 비활성 행 클릭 = checkout: 필요한 분기 선택(바깥쪽→안쪽)을 한 요청으로 원자 전환.
     // graph 구조는 그대로 두고 강조(활성 경로)만 이동한다.
-    if ($("#chat-send").disabled) { toast("응답 대기 중에는 분기를 전환할 수 없습니다"); return; }
+    if (state.sending) { toast("응답 대기 중에는 분기를 전환할 수 없습니다"); return; }
     if (state.checkoutBusy) return; // 전환 진행 중 재클릭 무시 (인터리브 방지)
     state.checkoutBusy = true;
     const cid = state.chatId;
@@ -2180,12 +2912,23 @@
       box.innerHTML = '<div class="empty">아직 전송된 요청이 없습니다.</div>';
       return;
     }
+    // payload 파라미터를 요약 줄로 노출 — body 전문은 messages가 길어 끝까지 스크롤해야
+    // temperature 같은 옵션이 보이므로, 실제로 실린 키를 여기서 먼저 보여준다.
+    const pl = lr.payload || {};
+    const extras = Object.keys(pl).filter((k) => k !== "messages" && k !== "model");
+    const paramLine = '<div class="reqparams">model <b>' + esc(pl.model || lr.model || "") + "</b>" +
+      (extras.length
+        ? extras.map((k) => ' <span class="pchip">' + esc(k) + " <b>" +
+          esc(typeof pl[k] === "object" ? JSON.stringify(pl[k]) : String(pl[k])) + "</b></span>").join("")
+        : ' <span class="cmeta">추가 설정 없음</span>') +
+      " timeout " + esc(lr.timeout_s || "?") + "s</div>";
     box.innerHTML =
-      '<div class="reqline"><code>' + esc(lr.method || "POST") + " " + esc(lr.url || "") + "</code> · payload " +
-      (lr.payload_bytes || 0).toLocaleString() + " bytes · " + esc(lr.ts || "") +
-      (lr.pending ? ' · <b>방금 전송됨 — 응답 대기 중</b>' : "") +
+      '<div class="reqline"><code>' + esc(lr.method || "POST") + " " + esc(lr.url || "") + "</code> payload " +
+      (lr.payload_bytes || 0).toLocaleString() + " bytes " + esc(lr.ts || "") +
+      (lr.pending ? ' <b>방금 전송됨 응답 대기 중</b>' : "") +
       ' <button class="copyreq" type="button" title="요청 전문 복사">요청 복사</button></div>' +
-      '<h4>headers (토큰 마스킹)</h4><pre class="raw">' + esc(JSON.stringify(lr.headers || {}, null, 2)) + "</pre>" +
+      paramLine +
+      '<h4>headers (토큰 마스킹)</h4><pre class="raw wrap">' + esc(JSON.stringify(lr.headers || {}, null, 2)) + "</pre>" +
       '<h4>body (실제 전송 전문)</h4><pre class="raw">' + esc(JSON.stringify(lr.payload || {}, null, 2)) + "</pre>";
     const rbox = $("#chat-response");
     const lresp = state.chatDoc && state.chatDoc.last_response;
@@ -2194,34 +2937,43 @@
       return;
     }
     rbox.innerHTML =
-      '<div class="reqline"><code>HTTP 200</code> · ' + (lresp.bytes || 0).toLocaleString() + " bytes · " +
-      (lresp.latency_ms ? (lresp.latency_ms / 1000).toFixed(1) + "초 · " : "") + esc(lresp.ts || "") + "</div>" +
+      '<div class="reqline"><code>HTTP 200</code> ' + (lresp.bytes || 0).toLocaleString() + " bytes " +
+      (lresp.latency_ms ? (lresp.latency_ms / 1000).toFixed(1) + "초 " : "") + esc(lresp.ts || "") + "</div>" +
       '<h4>envelope (수신 전문)</h4><pre class="raw">' + esc(JSON.stringify(lresp.envelope, null, 2)) + "</pre>";
   }
 
   async function sendChat() {
     const input = $("#chat-input");
-    const btn = $("#chat-send");
     const msg = input.value.trim();
-    if (!msg || btn.disabled) return;
-    btn.disabled = true;
+    if (!msg || state.sending) return;
+    const opts = readOptbar("chat");
+    state.userScrolled = false; // 내가 보낸 메시지는 보여야 하므로 따라가기 모드로 복귀
+    const token = "SEND-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8);
+    setTx({ kind: "send", chatId: state.chatId || "", startedMs: Date.now(), token: token });
     input.value = "";
     const box = $("#chat-messages");
     if (!((state.chatDoc && state.chatDoc.messages) || []).length) box.innerHTML = "";
+    // 질문과 대기 표시를 한 줄로 — 아랫변을 맞춰 대화와 같은 쪽에 정렬
     box.insertAdjacentHTML("beforeend",
-      '<div class="msgwrap user" id="chat-just-sent"><div class="msg user">' + esc(msg) + "</div></div>");
-    box.insertAdjacentHTML("beforeend",
+      '<div class="pendrow">' +
       '<div class="msg pending" id="chat-pending"><span class="spin"></span> 응답 대기 중 ' +
-      timerHtml(Date.now()) + "</div>");
+      timerHtml(Date.now()) + "</div>" +
+      '<div class="msgwrap user" id="chat-just-sent"><div class="msg user">' + esc(msg) + "</div></div></div>");
     // 방금 보낸 질문을 채팅창 상단에 앵커 — 질문과 그 아래 대기 타이머가 항상 보이게
     scrollMsgIntoTop(document.getElementById("chat-just-sent"));
-    renderChatRequest(buildRequestPreview(msg)); // 요청 전문은 전송 직후 즉시 표시
+    renderChatRequest(buildRequestPreview(msg, opts)); // 요청 전문은 전송 직후 즉시 표시
     const sentChatId = state.chatId; // 응답 도착 시 사용자가 다른 대화로 이동했으면 화면을 뺏지 않는다
     try {
-      const r = await apiPost("api/chat/send", {
-        id: sentChatId, message: msg, model: $("#model").value,
+      const r = await apiPost("api/chat/send", Object.assign({
+        id: sentChatId, message: msg, client_token: token,
         system: $("#chat-system").value.trim(),
-      });
+      }, opts));
+      // 프로젝트 홈에서 시작한 새 대화는 생성 직후 그 프로젝트에 넣는다
+      if (!sentChatId && state.pendingProject) {
+        try { await apiPost("api/chat/meta", { id: r.id, project: state.pendingProject }); }
+        catch (err) { /* 소속 지정 실패는 대화 자체를 막지 않는다 */ }
+        state.pendingProject = null;
+      }
       const stillViewing = state.chatId === sentChatId; // 새 대화(null)였다면 여전히 null인지
       if (stillViewing) {
         state.scrollAnchor = "last-user"; // 답변 도착 후에도 질문을 상단에 유지
@@ -2231,21 +2983,26 @@
     } catch (e) {
       if (state.chatId === sentChatId) {
         const p = document.getElementById("chat-pending");
-        if (p) p.remove();
+        if (p) (p.closest(".pendrow") || p).remove(); // 질문+대기 표시 한 줄 통째로 제거
         input.value = msg; // 실패 시 입력 복원 (서버도 user 메시지를 저장하지 않음)
       }
-      toast("전송 실패: " + (e.code ? "(" + e.code + ") " : "") + e.message);
+      toast(e.code === "E-1022" ? "전송을 정지했습니다 응답은 저장되지 않았습니다"
+        : "전송 실패: " + (e.code ? "(" + e.code + ") " : "") + e.message);
     } finally {
-      btn.disabled = false;
+      setTx(null);
       input.focus();
     }
   }
 
-  $("#chat-send").addEventListener("click", sendChat);
+  $("#chat-send").addEventListener("click", () => { if (state.sending) cancelSend(); else sendChat(); });
+  renderTxState(); // 초기 아이콘(보내기) 렌더
   $("#chat-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) sendChat();
   });
   $("#chat-new").addEventListener("click", () => {
+    closeProjectHome();
+    setSidebar(false);
+    state.pendingProject = null;
     state.chatId = null;
     state.chatDoc = null;
     $("#chat-system").value = DEFAULT_CHAT_SYSTEM;
@@ -2253,9 +3010,19 @@
     renderChatMessages();
     pushRoute(); // 목록(새 대화) 상태도 history entry — 뒤로가기로 이전 대화 복귀
     $("#chat-input").focus();
-    toast("새 대화 — 첫 메시지를 보내면 생성됩니다");
+    toast("새 대화 첫 메시지를 보내면 생성됩니다");
   });
   $("#chat-list").addEventListener("click", (e) => {
+    const ct = e.target.closest("[data-ptoggle]");
+    if (ct) {
+      const pid = ct.getAttribute("data-ptoggle");
+      state.openProjects = state.openProjects || {};
+      state.openProjects[pid] = !isProjectOpen(pid);
+      renderChatList();
+      return;
+    }
+    const ph = e.target.closest("[data-phome]");
+    if (ph) { openProjectHome(ph.getAttribute("data-phome")); return; }
     const rn = e.target.closest(".crename");
     if (rn) { startChatRename(rn.getAttribute("data-cid")); return; }
     const pn = e.target.closest(".cpin");
@@ -2268,7 +3035,11 @@
     if (pd) { deleteProject(pd.getAttribute("data-pid")); return; }
     if (e.target.closest("input")) return; // 이름 변경 입력 중 클릭은 무시
     const it = e.target.closest("[data-chat]");
-    if (it && it.getAttribute("data-chat") !== state.chatId) loadChatDoc(it.getAttribute("data-chat"));
+    if (it) {
+      closeProjectHome();
+      setSidebar(false); // 모바일: 대화를 고르면 드로어를 닫는다
+      if (it.getAttribute("data-chat") !== state.chatId) loadChatDoc(it.getAttribute("data-chat"));
+    }
   });
 
   // 인라인 이름 변경 공통: target 요소를 input으로 바꾸고 Enter/blur 확정, Esc 취소
@@ -2298,7 +3069,7 @@
   }
 
   function startChatRename(cid) {
-    const item = $("#chat-list").querySelector('[data-chat="' + cid + '"]');
+    const item = $("#chat-list-items").querySelector('[data-chat="' + cid + '"]');
     const c = (state.chats || []).find((x) => x.id === cid);
     if (!item || !c) return;
     inlineRename(item.querySelector(".ctitle"), c.title, async (name) => {
@@ -2309,7 +3080,7 @@
   }
 
   function startProjectRename(pid) {
-    const btn = $("#chat-list").querySelector('.prename[data-pid="' + pid + '"]');
+    const btn = $("#chat-list-items").querySelector('.prename[data-pid="' + pid + '"]');
     const p = (state.projects || {})[pid];
     if (!btn || !p) return;
     inlineRename(btn.closest(".lsec"), p.name, async (name) => {
@@ -2328,7 +3099,7 @@
     try {
       await apiPost("api/project/delete", { id: pid });
       await refreshChats();
-      toast("프로젝트를 삭제했습니다" + (n ? " — 대화 " + n + "개는 최상위로 이동" : ""));
+      toast("프로젝트를 삭제했습니다" + (n ? " 대화 " + n + "개는 최상위로 이동" : ""));
     } catch (err) { toast("삭제 실패: " + (err.code ? "(" + err.code + ") " : "") + err.message); }
   }
 
@@ -2338,7 +3109,7 @@
     try {
       await apiPost("api/project/create", { name: name.trim() });
       await refreshChats();
-      toast("프로젝트를 만들었습니다 — 대화 항목의 폴더 아이콘으로 이동하세요");
+      toast("프로젝트를 만들었습니다 대화 항목의 폴더 아이콘으로 이동하세요");
     } catch (err) { toast("생성 실패: " + (err.code ? "(" + err.code + ") " : "") + err.message); }
   });
 
@@ -2363,7 +3134,7 @@
     openHtmlModal('"' + c.title + '" 프로젝트로 이동',
       '<div class="hint">이동할 프로젝트를 선택하거나 새로 만듭니다. 프로젝트는 최신 대화 활동순으로 정렬됩니다.</div>' +
       (rows ? '<div class="dsbtns" style="flex-wrap:wrap;gap:6px;margin:8px 0">' + rows + "</div>"
-        : '<div class="empty">아직 프로젝트가 없습니다 — 아래에서 새로 만드세요.</div>') +
+        : '<div class="empty">아직 프로젝트가 없습니다 아래에서 새로 만드세요.</div>') +
       '<div class="dsbtns" style="margin-top:10px;gap:6px">' +
       '<input id="mv-newname" class="rninput" type="text" placeholder="새 프로젝트 이름" maxlength="60">' +
       '<button id="mv-create" class="small" type="button">새 프로젝트 만들어 이동</button>' +
@@ -2389,33 +3160,62 @@
       } catch (err) { toast("이동 실패: " + (err.code ? "(" + err.code + ") " : "") + err.message); }
     };
   }
-  function copyText(text, label) {
+  // 복사 완료 피드백: 클립보드 기록이 끝난 뒤에만 버튼을 잠시 "복사됨"으로 바꾼다
+  const ICON_CHECK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+  function flashCopied(btn) {
+    if (!btn || btn._copyTimer) return;
+    const html = btn.innerHTML;
+    btn.innerHTML = ICON_CHECK + (btn.classList.contains("copycode") ? "" : "");
+    btn.classList.add("copied");
+    btn._copyTimer = setTimeout(() => {
+      btn.innerHTML = html;
+      btn.classList.remove("copied");
+      btn._copyTimer = null;
+    }, 1400);
+  }
+
+  function copyText(text, label, btn) {
+    const done = () => {
+      toast(label + "을(를) 클립보드에 복사했습니다");
+      flashCopied(btn);
+    };
+    // 확인 표시는 클립보드 기록이 "성공"했을 때만 — 실패하면 실패 토스트만 남는다
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(() => toast(label + "을(를) 클립보드에 복사했습니다"))
-        .catch(() => fallbackCopy(text));
-    } else {
-      fallbackCopy(text);
+      navigator.clipboard.writeText(text).then(done)
+        .catch(() => { if (fallbackCopy(text)) flashCopied(btn); });
+    } else if (fallbackCopy(text)) { // HTTP origin 등 clipboard API가 없는 환경
+      flashCopied(btn);
     }
   }
 
   $("#chat-messages").addEventListener("click", (e) => {
+    const tg = e.target.closest(".msgtoggle");
+    if (tg) {
+      const key = tg.getAttribute("data-toggle");
+      const expanded = state.expandedMsgs || (state.expandedMsgs = {});
+      if (expanded[key]) delete expanded[key]; else expanded[key] = true;
+      applyMsgCollapse();
+      return;
+    }
     const cc = e.target.closest(".copycode");
     if (cc) {
-      copyText(cc.closest(".codewrap").querySelector("code").textContent, "코드");
+      copyText(cc.closest(".codewrap").querySelector("code").textContent, "코드", cc);
       return;
     }
     const cm = e.target.closest(".copymsg");
     if (cm) {
       const m = ((state.chatDoc || {}).messages || [])[Number(cm.getAttribute("data-mi"))];
-      if (m) copyText(m.content, m.role === "assistant" ? "답변 전체" : "메시지"); // 원문 그대로 복사
+      if (m) copyText(m.content, m.role === "assistant" ? "답변 전체" : "메시지", cm); // 원문 그대로 복사
       return;
     }
     const em = e.target.closest(".editmsg");
     if (em) {
-      if ($("#chat-send").disabled) { toast("응답 대기 중에는 수정할 수 없습니다"); return; }
+      if (state.sending) { toast("응답 대기 중에는 수정할 수 없습니다"); return; }
       state.ctxEditIdx = null;
       state.editingIdx = Number(em.getAttribute("data-mi"));
       renderChatMessages();
+      wireOptbar("edit", readOptbar("chat")); // 대화 입력창의 현재 선택을 이어받는다
       const ta = document.getElementById("edit-msg-ta");
       if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
       return;
@@ -2426,7 +3226,7 @@
       return;
     }
     if (e.target.closest("#edit-msg-send")) {
-      sendEdit();
+      if (state.sending) cancelSend(); else sendEdit();
       return;
     }
     if (e.target.closest("#ctx-edit-cancel")) {
@@ -2451,17 +3251,17 @@
     if (i == null || !ta) return;
     const content = ta.value.trim();
     if (!content) { toast("내용이 비어 있습니다"); return; }
-    const btn = $("#chat-send");
-    if (btn.disabled) return;
-    btn.disabled = true;
-    const sendBtn = document.getElementById("edit-msg-send");
-    if (sendBtn) { sendBtn.disabled = true; sendBtn.innerHTML = '<span class="spin"></span> 응답 대기 중'; }
+    if (state.sending) return;
+    const opts = readOptbar("edit");
+    const token = "EDIT-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8);
+    setTx({ kind: "edit", chatId: state.chatId || "", editIndex: i, startedMs: Date.now(), token: token });
+    const restoreEditBtn = () => setTx(null);
     const sentChatId = state.chatId;
     try {
-      const r = await apiPost("api/chat/edit", {
-        id: sentChatId, index: i, message: content,
-        model: $("#model").value, system: $("#chat-system").value.trim(),
-      });
+      const r = await apiPost("api/chat/edit", Object.assign({
+        id: sentChatId, index: i, message: content, client_token: token,
+        system: $("#chat-system").value.trim(),
+      }, opts));
       if (state.chatId === sentChatId) { // 다른 대화로 이동했으면 화면 유지
         state.editingIdx = null;
         state.scrollAnchor = i; // 수정한 질문을 상단에 앵커
@@ -2470,10 +3270,11 @@
       refreshChats();
       toast("분기 생성: " + (r.branch.active + 1) + "/" + r.branch.total);
     } catch (e) {
-      toast("수정 전송 실패: " + (e.code ? "(" + e.code + ") " : "") + e.message);
-      if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = "전송"; }
+      toast(e.code === "E-1022" ? "전송을 정지했습니다 분기는 생성되지 않았습니다"
+        : "수정 전송 실패: " + (e.code ? "(" + e.code + ") " : "") + e.message);
+      restoreEditBtn();
     } finally {
-      btn.disabled = false;
+      setTx(null);
     }
   }
 
@@ -2494,7 +3295,7 @@
         state.scrollAnchor = i;
         await loadChatDoc(sentChatId);
       }
-      toast("#" + i + " 내용 수정 완료 — 다음 질문부터 반영됩니다");
+      toast("#" + i + " 내용 수정 완료 다음 질문부터 반영됩니다");
     } catch (e) {
       toast("수정 실패: " + (e.code ? "(" + e.code + ") " : "") + e.message);
       if (saveBtn) saveBtn.disabled = false;
@@ -2620,7 +3421,7 @@
     try {
       const resp = await apiPost("api/config", { config: cfg });
       $("#config").value = JSON.stringify(resp.config, null, 2);
-      toast("LLM 연결 설정을 저장했습니다 — 다음 변환부터 적용");
+      toast("LLM 연결 설정을 저장했습니다 다음 변환부터 적용");
       refreshLlmStatus();
     } catch (e) {
       toast("저장 실패: " + (e.code ? "(" + e.code + ") " : "") + e.message);
@@ -2630,7 +3431,7 @@
   async function savePrompt() {
     try {
       await apiPost("api/prompt", { text: $("#prompt").value });
-      toast("시스템 프롬프트를 저장했습니다 — 다음 변환부터 적용");
+      toast("시스템 프롬프트를 저장했습니다 다음 변환부터 적용");
     } catch (e) {
       toast("저장 실패: " + (e.code ? "(" + e.code + ") " : "") + e.message);
     }
@@ -2646,8 +3447,8 @@
         return;
       }
       const ex = h.executor || {};
-      const busy = ex.running ? " · 실행 중(" + esc(ex.model || "?") + (ex.queued ? ", 대기 " + esc(ex.queued) : "") + ")" : "";
-      const auth = h.auth && h.auth !== "ok" ? " · auth: " + esc(h.auth) : "";
+      const busy = ex.running ? " 실행 중(" + esc(ex.model || "?") + (ex.queued ? ", 대기 " + esc(ex.queued) : "") + ")" : "";
+      const auth = h.auth && h.auth !== "ok" ? " auth: " + esc(h.auth) : "";
       el.innerHTML = "LLM <b>연결됨</b>" + busy + auth;
     } catch (e) {
       $("#llm-status").textContent = "LLM 상태 조회 실패";
@@ -2768,7 +3569,8 @@
     let ok = false;
     try { ok = document.execCommand("copy"); } catch (e) { /* ignore */ }
     ta.remove();
-    toast(ok ? "결과 JSON을 클립보드에 복사했습니다" : "클립보드 복사 실패");
+    toast(ok ? "클립보드에 복사했습니다" : "클립보드 복사 실패");
+    return ok;
   }
 
   $("#copy-json").addEventListener("click", () => {

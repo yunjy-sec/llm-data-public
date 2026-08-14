@@ -53,7 +53,7 @@ VENDOR_TYPES = {
     ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2",
     ".ttf": "font/ttf", ".eot": "application/vnd.ms-fontobject", ".otf": "font/otf",
 }
-ALLOWED_MODELS = ("fable", "opus", "sonnet", "haiku", "gpt-5.6", "gpt-5.5", "gpt-5.3", "o3")
+# 모델 목록은 설정(config/llm.json의 "models")에서 동적으로 읽는다 — llm.allowed_models()
 
 _LOCK = threading.RLock()
 
@@ -511,8 +511,27 @@ def save_chat(chat):
 _CHAT_LOCKS = {}
 _CHAT_LOCKS_GUARD = threading.Lock()
 # chat별 in-flight 전송 표시 — 프론트가 새로고침돼도 진행 과정을 복원해 렌더링한다.
-# 값: {"message", "ts", "model", "title", ("edit_index")}. 저장 완료·실패 시 제거.
+# 값: {"message", "ts", "model", "title", ("edit_index"), ("cancelled")}. 저장 완료·실패 시 제거.
 _CHAT_PENDING = {}
+
+
+def chat_cfg_with_options(body, cfg):
+    """요청의 model·temperature·reasoning_effort를 cfg에 반영 (지원하지 않는 값은 무시).
+    잘못된 값이면 오류 메시지를 반환한다."""
+    model = body.get("model")
+    if model is not None:
+        if model not in llm.allowed_models(cfg):
+            return None, "지원하지 않는 model"
+        cfg = dict(cfg, model=model)
+    for key in ("temperature", "reasoning_effort"):
+        val = body.get(key)
+        if val in (None, ""):
+            continue
+        allowed = llm.option_values(cfg.get("model"), key, cfg)
+        if str(val) not in allowed:
+            return None, "'%s'는 %s 모델이 지원하는 %s 값이 아님" % (val, cfg.get("model"), key)
+        cfg = dict(cfg, **{key: str(val)})
+    return cfg, None
 
 
 def chat_lock(chat_id):
@@ -948,7 +967,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "file": ds["file"]})
             if path == "/api/models":
                 cfg = llm.load_config()
-                return self._json({"models": list(ALLOWED_MODELS), "default": cfg.get("model")})
+                return self._json({"models": list(llm.allowed_models(cfg)), "default": cfg.get("model"),
+                                   "options": llm.model_options(cfg)})
             if path == "/api/jobs":
                 q = parse_qs(u.query)
                 try:
@@ -1239,9 +1259,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(400, "message가 비어 있음", "E-1003")
                 if len(msg) > MAX_INPUT_CHARS:
                     return self._error(413, "메시지가 %d자 초과" % MAX_INPUT_CHARS, "E-1004")
-                model = body.get("model")
-                if model is not None and model not in ALLOWED_MODELS:
-                    return self._error(400, "지원하지 않는 model", "E-1006")
                 cid = body.get("id")
                 if cid and not CHAT_ID_RE.fullmatch(str(cid)):
                     return self._error(400, "bad id", "E-1001")
@@ -1264,21 +1281,28 @@ class Handler(BaseHTTPRequestHandler):
                     history.append({"role": "user", "content": msg, "ts": now_iso()})
                     llm_messages = ([{"role": "system", "content": chat["system"]}]
                                     if chat.get("system") else []) + history
-                    cfg = llm.load_config()
-                    if model:
-                        cfg = dict(cfg, model=model)
+                    cfg, opt_err = chat_cfg_with_options(body, llm.load_config())
+                    if opt_err:
+                        return self._error(400, opt_err, "E-1006")
                     req_meta = {}
                     # 새로고침 복원용 in-flight 표시 — 저장 완료(또는 실패)까지 유지
                     _CHAT_PENDING[chat["id"]] = {"message": msg, "ts": now_iso(),
                                                  "model": cfg.get("model"),
-                                                 "title": chat.get("title") or ""}
+                                                 "title": chat.get("title") or "",
+                                                 "token": str(body.get("client_token") or "")}
                     try:
                         try:
                             content, usage, latency_ms = llm.chat_messages(
                                 llm_messages, cfg=cfg, tag=chat["id"], meta_out=req_meta)
                         except llm.LLMError as e:
+                            # 사용자가 정지한 경우엔 오류가 아니라 취소로 응답한다
+                            if (_CHAT_PENDING.get(chat["id"]) or {}).get("cancelled"):
+                                return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
                             # 실패 시 user 메시지는 저장하지 않는다 (재전송 가능하게)
                             return self._error(e.http, e.message, e.code)
+                        if (_CHAT_PENDING.get(chat["id"]) or {}).get("cancelled"):
+                            # 응답이 도착했어도 정지 요청이 있었으면 저장하지 않는다
+                            return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
                         req_meta["ts"] = now_iso()
                         chat["last_response"] = {"envelope": req_meta.pop("response_envelope", None),
                                                  "bytes": req_meta.pop("response_bytes", 0),
@@ -1305,9 +1329,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(400, "message가 비어 있음", "E-1003")
                 if not CHAT_ID_RE.fullmatch(cid):
                     return self._error(400, "bad id", "E-1001")
-                model = body.get("model")
-                if model is not None and model not in ALLOWED_MODELS:
-                    return self._error(400, "지원하지 않는 model", "E-1006")
                 with chat_lock(cid):
                     chat = load_chat(cid)
                     if chat is None:
@@ -1321,20 +1342,25 @@ class Handler(BaseHTTPRequestHandler):
                     new_user = {"role": "user", "content": msg, "ts": now_iso()}
                     llm_messages = ([{"role": "system", "content": chat["system"]}]
                                     if chat.get("system") else []) + msgs[:idx] + [new_user]
-                    cfg = llm.load_config()
-                    if model:
-                        cfg = dict(cfg, model=model)
+                    cfg, opt_err = chat_cfg_with_options(body, llm.load_config())
+                    if opt_err:
+                        return self._error(400, opt_err, "E-1006")
                     req_meta = {}
                     # 새로고침 복원용 in-flight 표시 (edit_index로 수정-재전송임을 구분)
                     _CHAT_PENDING[cid] = {"message": msg, "ts": now_iso(),
                                           "model": cfg.get("model"),
-                                          "title": chat.get("title") or "", "edit_index": idx}
+                                          "title": chat.get("title") or "", "edit_index": idx,
+                                          "token": str(body.get("client_token") or "")}
                     try:
                         try:
                             content, usage, latency_ms = llm.chat_messages(
                                 llm_messages, cfg=cfg, tag=cid, meta_out=req_meta)
                         except llm.LLMError as e:
+                            if (_CHAT_PENDING.get(cid) or {}).get("cancelled"):
+                                return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
                             return self._error(e.http, e.message, e.code)  # 실패 시 분기 생성 안 함
+                        if (_CHAT_PENDING.get(cid) or {}).get("cancelled"):
+                            return self._error(409, "사용자가 전송을 정지했습니다", "E-1022")
                         # 성공 후에만 분기 패킹: 현재 suffix(+하위 분기)를 variant로 보존
                         alts = chat.setdefault("alts", {})
                         key = str(idx)
@@ -1390,6 +1416,21 @@ class Handler(BaseHTTPRequestHandler):
                     chat["updated_at"] = now_iso()
                     save_chat(chat)
                 return self._json({"id": cid, "count": len(chat["messages"])})
+            if path == "/api/chat/cancel":
+                # 전송 정지: in-flight 표시에 취소 플래그를 세우고 업스트림 생성을 중단시킨다.
+                # 진행 중이던 send/edit 핸들러는 결과를 저장하지 않고 E-1022로 종결된다.
+                body = self._body() or {}
+                cid = str(body.get("id") or "")
+                token = str(body.get("token") or "")
+                p = _CHAT_PENDING.get(cid) if cid else None
+                if p is None and token:
+                    # 새 대화 첫 전송은 클라이언트가 chat id를 모른다 — 전송 토큰으로 찾는다
+                    p = next((v for v in list(_CHAT_PENDING.values()) if v.get("token") == token), None)
+                if not p:
+                    return self._json({"cancelled": False, "reason": "진행 중인 전송이 없음"})
+                p["cancelled"] = True
+                upstream = llm.cancel()  # best-effort — 업스트림이 지원하면 즉시 생성 중단
+                return self._json({"cancelled": True, "upstream": upstream})
             if path == "/api/chat/meta":
                 # 대화 메타 수정: 이름(title)·상위 고정(pinned)·프로젝트 이동(project) — LLM 호출 없음
                 body = self._body() or {}
@@ -1768,7 +1809,7 @@ class Handler(BaseHTTPRequestHandler):
 
         model = body.get("model")
         if model is not None:
-            if model not in ALLOWED_MODELS:
+            if model not in llm.allowed_models():
                 return self._error(400, "지원하지 않는 model", "E-1006")
 
         mode = body.get("mode") or "fill"
