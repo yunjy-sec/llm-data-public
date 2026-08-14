@@ -2,8 +2,9 @@
 data/
 runtime/
 
-# 로컬 LLM 연결 설정 — 토큰이 들어갈 수 있음 (config/llm.json.example만 커밋)
+# 로컬 연결 설정 — 토큰·자격 정보가 들어갈 수 있음 (.example만 커밋)
 config/llm.json
+config/sso.json
 
 __pycache__/
 *.pyc

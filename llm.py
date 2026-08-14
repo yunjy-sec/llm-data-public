@@ -768,10 +768,35 @@ def cancel(cfg=None):
         return {"cancelled": False}
 
 
+def configured_services(cfg=None):
+    """설정(llm.json)만으로 만드는 모델 목록. 상태 조회가 실패해도 이 목록은 항상 나온다.
+    게이트웨이 환경은 모델 목록 API가 없으므로 설정이 유일한 출처다."""
+    cfg = cfg or load_config()
+    opts = model_options(cfg)
+    out = []
+    for m in allowed_models(cfg):
+        rc = resolve(cfg, m)
+        try:
+            endpoint = chat_url(rc)
+        except LLMError as e:
+            endpoint = "(미설정: %s)" % e.message
+        out.append({
+            "id": str(m), "label": str(m), "model": current_model(rc),
+            "backend": None, "tier": None, "note": None, "enabled": True,
+            "timeout": req_timeout(rc), "max_inflight": None,
+            "endpoint": endpoint, "source": "config",
+            "health": None, "ok": None, "err": None,
+            "ewma_latency_ms": None, "last_error": None,
+            "options": opts.get(str(m)) or {},
+        })
+    return out
+
+
 def upstream_services(cfg=None):
-    """llm-api의 모델 서비스 상세 목록 — 대화 탭 모델 카드용.
+    """모델 카드용 상세 목록. 기본은 설정의 모델이고, 상태 조회(llm-api)가 되면 그 정보를 덧붙인다.
     각 항목만으로 해당 LLM과 대화 가능한 정보(endpoint·timeout 등)를 담는다."""
     cfg = cfg or load_config()
+    base = configured_services(cfg)
     try:
         root = _api_root(cfg)
         res = _http("GET", root + "/api/health", cfg, timeout=probe_timeout(cfg))
@@ -792,23 +817,56 @@ def upstream_services(cfg=None):
                 "ewma_latency_ms": st.get("ewma_latency_ms"),
                 "last_error": (st.get("last_error") or "")[:120] or None,
             })
+        # 설정 목록을 기준으로 상태를 덮어쓴다. 설정에 없고 상태에만 있는 모델도 함께 보인다.
+        by_id = {str(x["id"]): x for x in base}
+        for live in out:
+            cur = by_id.get(str(live.get("id")))
+            if cur is None:
+                live["source"] = "upstream"
+                base.append(live)
+                by_id[str(live.get("id"))] = live
+            else:
+                cur.update({k: v for k, v in live.items() if v is not None})
+                cur["source"] = "config+upstream"
         return {"reachable": True, "auth": (h.get("auth") or {}).get("state"),
-                "headers": masked_headers(cfg), "models": out}
+                "headers": masked_headers(cfg), "models": base}
     except Exception as e:
-        return {"reachable": False, "error": "%s: %s" % (type(e).__name__, e), "models": []}
+        # 상태 조회 실패는 설정 목록까지 감추지 않는다 (게이트웨이는 목록 API가 없는 것이 정상)
+        return {"reachable": False, "error": "%s: %s" % (type(e).__name__, e),
+                "headers": masked_headers(cfg), "models": base}
+
+
+def _safe_chat_url(cfg):
+    try:
+        return chat_url(cfg)
+    except LLMError as e:
+        return "(미설정: %s)" % e.message
 
 
 def upstream_health(cfg=None):
-    """llm-api /api/health 요약 (프론트 상태 표시용). 실패 시 reachable:false."""
-    cfg = cfg or load_config()
+    """업스트림 상태 요약 (프론트 상태 표시용).
+    llm-api는 /api/health로 상세를 주지만 게이트웨이에는 그런 API가 없다.
+    HTTP 응답이 오기만 하면 연결 자체는 살아 있는 것이므로 probe만 unsupported로 표시한다.
+    연결이 실제로 안 되는 경우(DNS·타임아웃·거부)만 reachable:false다."""
+    cfg = resolve(cfg or load_config())
     try:
         url = _api_root(cfg) + "/api/health"
         res = _http("GET", url, cfg, timeout=probe_timeout(cfg))
         if res.status >= 400:
-            raise LLMError("E-2001", "HTTP %s" % res.status)
-        h = json.loads(res.body.decode("utf-8"))
+            # 상태 API가 없는 환경 — 연결 실패로 표시하지 않는다
+            return {"reachable": True, "probe": "unsupported", "probe_status": res.status,
+                    "model": current_model(cfg), "url": _safe_chat_url(cfg)}
+        try:
+            h = json.loads(res.body.decode("utf-8"))
+        except ValueError:
+            return {"reachable": True, "probe": "unsupported",
+                    "model": current_model(cfg), "url": _safe_chat_url(cfg)}
+        if not isinstance(h, dict) or "executor" not in h:
+            return {"reachable": True, "probe": "unsupported",
+                    "model": current_model(cfg), "url": _safe_chat_url(cfg)}
         return {
             "reachable": True,
+            "probe": "ok",
             "auth": (h.get("auth") or {}).get("state"),
             "executor": {
                 "running": (h.get("executor") or {}).get("running"),
@@ -817,4 +875,5 @@ def upstream_health(cfg=None):
             },
         }
     except Exception as e:
-        return {"reachable": False, "error": "%s: %s" % (type(e).__name__, e)}
+        return {"reachable": False, "probe": "failed", "model": current_model(cfg),
+                "url": _safe_chat_url(cfg), "error": "%s: %s" % (type(e).__name__, e)}

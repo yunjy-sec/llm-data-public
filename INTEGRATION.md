@@ -30,12 +30,14 @@ python server.py --host 127.0.0.1 --port 8821
 | 구분 | 파일 | 역할 |
 |---|---|---|
 | 백엔드 | `server.py` | HTTP 서버·전체 API·잡 큐·데이터셋/마스터/대화 저장. 저장 경로 상수(`DATA_DIR`·`JOBS_DIR`)가 상단에 있다 |
+| 백엔드 | `sso.py` | **로그인 id 조회 전부** — 실패해도 guest로만 떨어지고 다른 기능에 영향이 없다 |
 | 백엔드 | `llm.py` | **LLM 접점 전부** — endpoint 조립(`chat_url`)·헤더(`_headers`)·요청/파싱(`chat_messages`)·설정 로드·저장. 접목 시 여기만 고친다 |
 | 프론트 | `web/index.html` | 탭·패널 구조와 요소 id |
 | 프론트 | `web/app.js` | 모든 화면 로직 (변환·데이터셋·마스터·대화·라우팅). 빌드 없는 순수 JS |
 | 프론트 | `web/styles.css` | 테마 변수(light/dark)와 전체 스타일 |
 | 프론트 | `web/sheet.html` | Luckysheet 격리 iframe (표 편집) |
 | 설정 | `config/llm.json.example` | 설정 키 예시 — 복사해 `llm.json`으로 쓴다 (실제 파일은 커밋 금지) |
+| 설정 | `config/sso.json.example` | 로그인 id 조회 설정 예시 — 복사해 `sso.json`으로 쓴다 (선택) |
 | 프롬프트 | `prompts/table_to_schema.md` | 변환 시스템 프롬프트. `{{TARGET_SCHEMA}}` 자리에 목표 스키마가 치환된다 |
 
 ## 경로 설정 방법
@@ -57,6 +59,7 @@ python server.py --host 127.0.0.1 --port 8821
 | `LLM_DATA_PERSIST` | 데이터셋·저장본(exports)·대화·프로젝트·마스터·편집 로그·사용자 설정/프롬프트 (**유지 필요**) | `/srv/llm-data/data` |
 | `LLM_DATA_RUNTIME` | 변환 작업 이력 (**유실 허용**) | `/var/tmp/llm-data` |
 | `LLM_DATA_CONFIG` | 설정 파일 경로를 개별 지정할 때 (PERSIST보다 우선) | `/etc/llm-data/llm.json` |
+| `LLM_DATA_SSO_CONFIG` | SSO 설정 파일 경로를 개별 지정할 때 | `/etc/llm-data/sso.json` |
 
 ```bash
 LLM_DATA_PERSIST=/srv/llm-data/data LLM_DATA_RUNTIME=/var/tmp/llm-data python server.py --host 0.0.0.0 --port 8821
@@ -221,6 +224,43 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
 
 취소(`/cancel`)와 상태 조회(`/api/health`)에 쓰는 API 루트도 같은 기준으로 계산되므로,
 `api_base_url`만 지정해도 취소·상태 표시가 올바른 곳을 향한다.
+
+## SSO 로그인 id (선택)
+
+로그인 사용자를 표시하는 기능은 `sso.py` 하나에 모여 있고 **기존 기능과 완전히 분리**되어 있다.
+어떤 이유로 실패하든 id만 `guest`로 표시되고 변환·대화는 그대로 동작한다.
+설정 파일이 없으면 SSO를 아예 시도하지 않는다.
+
+설정은 `config/sso.json`이며 `llm.json`과 같은 방식이다 (url·header가 요청을 결정하고 etc는 전송되지 않는다).
+
+```json
+{
+  "url": "http://12.23.31.72:8000/api/me",
+  "header": { "Accept": "application/json" },
+  "id_field": "data.EP_LOGINID",
+  "name_field": "data.EP_USERNAME",
+  "dept_field": "data.EP_DEPTNAME",
+  "etc": { "forward_headers": ["Cookie", "Authorization"], "timeout": 3, "cache_seconds": 60 }
+}
+```
+
+- `url`은 적은 주소로 그대로 나간다. **localhost가 아니라 그 호스트**다.
+- `forward_headers`에 적힌 헤더(기본 `Cookie`, `Authorization`)를 브라우저 요청에서 그대로 넘긴다.
+  세션 쿠키가 넘어가야 누가 로그인했는지 알 수 있다.
+- 필드 경로는 점으로 중첩을 표현하고 배열로 여러 후보를 줄 수 있다. 미지정 시 위 세 경로가 기본값이다.
+- 프록시가 헤더로 직접 넣어 주는 환경이면 `X-SSO-User`가 우선한다 (SSO 조회 없이 그 값을 쓴다).
+
+화면 표시 (id 왼쪽 LED)
+
+| 상태 | LED | 표시 |
+|---|---|---|
+| id를 가져옴 | 초록 | id 이름 부서 |
+| 통신은 됐지만 응답에서 값을 못 찾음 | 주황 | `guest` (브라우저 콘솔에 응답 일부 출력) |
+| 서비스 응답 없음 (DNS·거부·타임아웃) | 빨강 | `guest` |
+| 설정 없음 | 없음 | `guest` |
+
+조회 결과는 세션 단위로 `cache_seconds`(기본 60초) 캐시하고, 화면은 15초마다 갱신한다.
+토큰·쿠키가 담기는 `config/sso.json`은 `llm.json`과 함께 커밋 대상이 아니다 (PERSIST 볼륨에 둔다).
 
 ## 코드 수정이 필요한 경우
 

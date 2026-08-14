@@ -25,7 +25,10 @@ h1 { font-size: 18px; margin: 0; display: inline; }
 .sub { color: var(--muted); margin-left: 8px; font-size: 12.5px; }
 .statusbar { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--wait); display: inline-block; }
-.dot.ok { background: var(--ok); } .dot.err { background: var(--err); }
+.dot.ok { background: var(--ok); } .dot.err { background: var(--err); } .dot.warn { background: #d98207; }
+/* 로그인 표시: LED와 id 이름 부서를 한 줄로 (좁은 폭에서 LED가 윗줄로 밀리지 않게) */
+.loginid { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.loginid .logmeta { color: var(--muted); font-size: 11px; }
 .llmstat { color: var(--muted); max-width: 420px; }
 .llmstat b { color: var(--fg); font-weight: 600; }
 .modelbox { color: var(--muted); }
@@ -163,6 +166,8 @@ button.danger { border: 1px solid var(--err); color: var(--err); background: non
 #edit-file-select { max-width: 340px; }
 td.logdetail { font-family: var(--mono); font-size: 11.5px; white-space: normal; word-break: break-all; min-width: 260px; max-width: 520px; }
 .modelcards { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 8px; }
+/* 상태 조회가 안 되는 환경(게이트웨이)에서 설정 기준 목록임을 알리는 한 줄 */
+.mnotice { flex: 0 0 100%; font-size: 9.5px; margin: 0 0 2px; }
 .mcard { flex: 0 0 auto; width: 195px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; cursor: pointer; font-size: 10.5px; line-height: 1.45; color: var(--muted); }
 .mcard:hover { border-color: var(--accent); }
 .mcard.sel { border-color: var(--accent); background: var(--accent-weak); }
@@ -435,9 +440,14 @@ pre.raw.wrap { white-space: pre-wrap; word-break: break-all; }
 .optlabel { font-size: 10px; color: var(--muted); }
 .optfield.off { opacity: .45; }
 .optfield.off .optlabel { text-decoration: line-through; }
-.optsel { font-size: 10.5px; padding: 1px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--card); color: var(--muted); max-width: 140px; }
-.optsel:disabled { cursor: not-allowed; }
-.optsel:not(:disabled):hover { border-color: var(--accent); color: var(--fg); }
+/* 목록형(select)과 범위형(number) 컨트롤은 같은 모양을 공유한다 — 한 줄에 섞여 놓이므로 */
+.optsel, .optnum { font-size: 10.5px; padding: 1px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--card); color: var(--muted); max-width: 140px; font-family: inherit; line-height: 1.5; }
+.optsel:disabled, .optnum:disabled { cursor: not-allowed; }
+.optsel:not(:disabled):hover, .optnum:not(:disabled):hover { border-color: var(--accent); color: var(--fg); }
+.optsel:focus, .optnum:focus { outline: none; border-color: var(--accent); color: var(--fg); }
+/* 숫자 입력은 값 폭에 맞춰 좁게. 스피너는 이 크기에서 눌리지 않아 숨기고 키보드 위아래로 조절한다 */
+.optnum { width: 46px; -moz-appearance: textfield; appearance: textfield; }
+.optnum::-webkit-outer-spin-button, .optnum::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 /* 정지 버튼 (전송 중) — ChatGPT식으로 보내기 자리를 대체 */
 button.stopbtn { background: var(--err); border-color: var(--err); color: #fff; }
 button.stopbtn:hover { filter: brightness(1.08); }

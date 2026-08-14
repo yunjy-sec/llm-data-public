@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import llm
+import sso
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
@@ -868,9 +869,21 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/examples":
                 return self._json({"examples": load_examples()})
             if path == "/api/whoami":
-                # 로그인 id — 추후 SSO 연동 지점. SSO 헤더가 오면 그 값을, 없으면 guest.
-                uid = (self.headers.get("X-SSO-User") or "").strip() or "guest"
-                return self._json({"id": uid, "source": "sso" if uid != "guest" else "none"})
+                # 로그인 id. SSO 조회는 sso.py가 전담하며 실패해도 guest로만 떨어진다.
+                # 프록시가 헤더로 직접 넣어 주는 환경(X-SSO-User)이 우선이다.
+                uid = (self.headers.get("X-SSO-User") or "").strip()
+                if uid:
+                    return self._json({"id": uid, "source": "header", "service": "up"})
+                try:
+                    return self._json(sso.whoami(self.headers))
+                except Exception as e:  # sso 모듈 문제로 화면이 막히지 않게 한다
+                    return self._json({"id": "guest", "source": "none", "service": "down",
+                                       "error": "%s: %s" % (type(e).__name__, e)})
+            if path == "/api/sso/health":
+                try:
+                    return self._json(sso.health())
+                except Exception as e:
+                    return self._json({"service": "down", "error": "%s: %s" % (type(e).__name__, e)})
             if path == "/api/chats":
                 chats = list_chats()
                 pend = dict(_CHAT_PENDING)

@@ -1,0 +1,23 @@
+{
+  "url": "http://12.23.31.72:8000/api/me",
+  "header": {
+    "Accept": "application/json"
+  },
+  "id_field": "data.EP_LOGINID",
+  "name_field": "data.EP_USERNAME",
+  "dept_field": "data.EP_DEPTNAME",
+  "etc": {
+    "설명": "로그인 id 조회 설정. url과 header가 요청을 그대로 결정하고 etc는 전송되지 않는다.",
+    "url": "8000 포트를 서빙하는 호스트를 그대로 적는다. localhost가 아니다.",
+    "필드": "응답 JSON에서 값을 꺼낼 경로. 점으로 중첩을 표현하고, 배열로 여러 후보를 줄 수 있다.",
+    "forward_headers": ["Cookie", "Authorization"],
+    "forward_headers 설명": "브라우저 요청의 이 헤더들을 그대로 넘긴다. 세션 쿠키가 넘어가야 누가 로그인했는지 알 수 있다.",
+    "method": "GET",
+    "timeout": 3,
+    "cache_seconds": 60,
+    "health_seconds": 10,
+    "LED": "초록 = id를 가져옴 / 주황 = 통신은 됐지만 응답에서 값을 못 찾음 (브라우저 콘솔에 응답 일부 출력) / 빨강 = 서비스 응답 없음",
+    "실패 시": "어떤 이유로 실패하든 id는 guest로 유지되고 다른 기능은 그대로 동작한다.",
+    "설정 없을 때": "이 파일이 없거나 url이 비어 있으면 SSO를 아예 시도하지 않고 LED도 켜지 않는다."
+  }
+}
