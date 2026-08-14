@@ -3466,8 +3466,8 @@
         : "Send failed: " + (e.code ? "(" + e.code + ") " : "") + e.message);
     } finally {
       setTx(null, sentChatId || "");
-      setTx(null, lastChatId());
-      refreshRates();   // 방금 보낸 요청이 다음 주기를 기다리지 않고 바로 지표에 보이게   // 새 대화였다면 새로 받은 id 쪽도 함께 해제
+      setTx(null, lastChatId());   // 새 대화였다면 새로 받은 id 쪽도 함께 해제
+      refreshRates();              // 방금 보낸 요청이 다음 주기를 기다리지 않고 바로 지표에 보이게
       input.focus();
     }
   }
