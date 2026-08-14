@@ -544,7 +544,7 @@ def chat_cfg_with_options(body, cfg):
 # 접근 제어를 거치지 않는 경로. 차단 페이지 자체와 그 페이지가 쓰는 것들은 열어 둬야 한다.
 ACCESS_OPEN_PATHS = {
     "/denied.html", "/access.js", "/styles.css", "/favicon.ico",
-    "/api/access/check", "/api/access/temp", "/api/whoami", "/api/health",
+    "/api/access/check", "/api/access/temp", "/api/access/logout", "/api/whoami", "/api/health",
 }
 
 
@@ -557,7 +557,7 @@ def access_decision(handler):
             who = sso.whoami(handler.headers)
         except Exception:
             who = {}
-        tok = (handler.headers.get("X-Access-Token") or "").strip()
+        tok = access.token_from(handler.headers)
         d = access.decide({"id": who.get("id"), "dept": who.get("dept")}, tok)
         return None if d.get("allowed") else d
     except Exception as e:  # 판단이 깨져도 서비스가 멈추면 안 된다
@@ -824,11 +824,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _send(self, code, payload, ctype="application/json; charset=utf-8", cache=False):
+    def _send(self, code, payload, ctype="application/json; charset=utf-8", cache=False,
+              extra_headers=None):
         body = payload if isinstance(payload, bytes) else json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (extra_headers or []):
+            self.send_header(name, value)
         # vendor 라이브러리는 캐시 허용 — sheet.html iframe이 잡 전환마다 재생성되므로
         # no-store면 매번 6MB를 다시 받는다
         self.send_header("Cache-Control", "public, max-age=86400" if cache else "no-store")
@@ -837,8 +840,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _json(self, obj, code=200):
-        self._send(code, obj)
+    def _json(self, obj, code=200, extra_headers=None):
+        self._send(code, obj, extra_headers=extra_headers)
 
     def _error(self, code, message, ecode):
         self._json({"error": message, "code": ecode}, code)
@@ -869,15 +872,13 @@ class Handler(BaseHTTPRequestHandler):
             if path not in ACCESS_OPEN_PATHS and not path.startswith("/vendor/"):
                 denied = access_decision(self)
                 if denied is not None:
-                    if path.startswith("/api/"):
-                        return self._error(403, denied.get("reason") or "허가되지 않은 사용자입니다",
-                                           "E-1009")
-                    self.send_response(302)
-                    self.send_header("Location", "denied.html")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
+                    if path in ("/", "/index.html"):
+                        # 리다이렉트하지 않고 그 자리에서 차단 페이지를 내려준다.
+                        # 프록시가 prefix를 떼는지 아닌지에 따라 Location이 밖으로 새기 때문이다
+                        # (/apps/llm-data 뒤에서 /denied.html 로 가면 프록시 루트로 튕긴다).
+                        return self._static("denied.html", code=403)
+                    return self._error(403, denied.get("reason") or "허가되지 않은 사용자입니다",
+                                       "E-1009")
             if path in ("/", "/index.html"):
                 return self._static("index.html")
             name = path.lstrip("/")
@@ -953,17 +954,17 @@ class Handler(BaseHTTPRequestHandler):
                     who = sso.whoami(self.headers)
                 except Exception:
                     who = {"id": "guest", "source": "none", "service": "down"}
-                tok = (self.headers.get("X-Access-Token") or "").strip()
+                tok = access.token_from(self.headers)
                 out = access.decide({"id": who.get("id"), "dept": who.get("dept")}, tok)
                 out["user"] = who
+                out["status"] = access.status()   # 어느 파일을 읽었는지 화면에서 바로 확인
                 return self._json(out)
             if path == "/api/access/rules":
                 try:
                     who = sso.whoami(self.headers)
                 except Exception:
                     who = {}
-                if not access.can_admin({"id": who.get("id")},
-                                        (self.headers.get("X-Access-Token") or "").strip()):
+                if not access.can_admin({"id": who.get("id")}, access.token_from(self.headers)):
                     return self._error(403, "허가 목록을 볼 권한이 없습니다", "E-1007")
                 return self._json(access.rules())
             if path == "/api/sso/config":
@@ -1098,13 +1099,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._error(500, "%s: %s" % (type(e).__name__, e), "E-5001")
 
-    def _static(self, name):
+    def _static(self, name, code=200):
         ctype = STATIC_FILES.get(name)
         if ctype is None:
             return self._error(404, "not found", "E-1002")
         try:
             with open(os.path.join(WEB, name), "rb") as f:
-                return self._send(200, f.read(), ctype)
+                return self._send(code, f.read(), ctype)
         except OSError:
             return self._error(404, "not found", "E-1002")
 
@@ -1170,14 +1171,19 @@ class Handler(BaseHTTPRequestHandler):
                 tok = access.temp_login(body.get("id"), body.get("pw"))
                 if not tok:
                     return self._error(401, "임시 id 또는 pw가 맞지 않습니다", "E-1008")
-                return self._json({"token": tok})
+                # 쿠키로도 심는다. 페이지 이동에는 헤더를 붙일 수 없어 쿠키가 없으면
+                # 서버는 차단하고 화면은 통과로 판단해 무한 새로고침이 된다.
+                return self._json({"token": tok}, extra_headers=[("Set-Cookie", access.cookie_header(tok))])
+            if path == "/api/access/logout":
+                # 통행증만 버린다. SSO 로그인 자체는 이 서비스가 관여하지 않는다.
+                return self._json({"ok": True},
+                                  extra_headers=[("Set-Cookie", access.cookie_header(""))])
             if path == "/api/access/rules":
                 try:
                     who = sso.whoami(self.headers)
                 except Exception:
                     who = {}
-                if not access.can_admin({"id": who.get("id")},
-                                        (self.headers.get("X-Access-Token") or "").strip()):
+                if not access.can_admin({"id": who.get("id")}, access.token_from(self.headers)):
                     return self._error(403, "허가 목록을 편집할 권한이 없습니다", "E-1007")
                 try:
                     return self._json(access.save_rules(self._body() or {}))
@@ -2012,6 +2018,10 @@ def main():
     migrate_masters()  # 구형 스키마 마스터를 v4로 1회 변환
     reap_running()
     threading.Thread(target=worker_loop, daemon=True).start()
+    try:
+        access.log_status()   # 접근 제어가 켜졌는지 기동 로그에서 바로 보이게
+    except Exception as e:
+        print("[ACCESS] 상태 확인 실패: %s" % e, flush=True)
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     print("[llm-data] http://%s:%d (LLM: %s)" % (args.host, args.port, llm.status().get("url")))
     httpd.serve_forever()

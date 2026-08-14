@@ -21,7 +21,12 @@
 설정 파일이 없거나 allow가 비어 있으면 **아무도 막지 않는다**(fail-open).
 접근 제어를 켜는 순간부터 목록에 있는 사람만 들어온다.
 
+설정은 기동 시 한 번 읽고 그 뒤로는 파일이 바뀔 때만 다시 읽는다(수정시각·크기로 감지).
+id/pw로 들어오는 요청은 무조건 파일을 다시 읽으므로, 자격을 추가하면 재기동 없이 바로 통한다.
+
 임시 토큰은 서명(HMAC)만으로 검증한다. 서버를 재기동해도 유효하고 별도 저장이 필요 없다.
+토큰은 쿠키(llm_access)로도 내려준다 — 페이지 이동에는 헤더를 붙일 수 없어서, 쿠키가 없으면
+서버는 차단하고 화면은 통과로 판단해 무한 새로고침이 된다.
 """
 
 import base64
@@ -35,11 +40,20 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 _PERSIST = os.environ.get("LLM_DATA_PERSIST")
 CONFIG_DEFAULT_PATH = os.path.join(ROOT, "config", "access.json")
-CONFIG_PATH = (os.environ.get("LLM_DATA_ACCESS_CONFIG")
+_ENV_PATH = os.environ.get("LLM_DATA_ACCESS_CONFIG")
+CONFIG_PATH = (_ENV_PATH
                or (os.path.join(_PERSIST, "config", "access.json") if _PERSIST else CONFIG_DEFAULT_PATH))
+# 환경변수로 경로를 못박았으면 그 파일만 본다. 저장소 기본본으로 흘러가면
+# "제어를 껐다고 생각한 곳에서 갑자기 켜지는" 사고가 난다.
+_SEARCH_PATHS = (CONFIG_PATH,) if _ENV_PATH else (CONFIG_PATH, CONFIG_DEFAULT_PATH)
 
 DEFAULT_SESSION_HOURS = 12
-_LOCK = threading.Lock()
+# 통행증을 담는 쿠키 이름. 헤더(X-Access-Token)만 쓰면 페이지 이동에는 실리지 않아
+# 서버가 차단 -> 화면은 통과로 판단 -> 무한 새로고침이 된다.
+COOKIE_NAME = "llm_access"
+_LOCK = threading.Lock()          # 파일 쓰기 직렬화
+_CFG_LOCK = threading.RLock()     # 설정 캐시 (쓰기 잠금과 분리 — _secret이 둘 다 잡는다)
+_CFG = {"stamp": None, "cfg": {}}  # 파일이 바뀌면 stamp가 달라져 자동으로 다시 읽는다
 
 
 def _log(msg):
@@ -50,18 +64,30 @@ def _log(msg):
         pass
 
 
-def load_config():
-    for p in (CONFIG_PATH, CONFIG_DEFAULT_PATH):
-        try:
-            with open(p, encoding="utf-8") as f:
-                cfg = json.load(f)
-            return cfg if isinstance(cfg, dict) else {}
-        except OSError:
-            continue
-        except ValueError as e:
-            _log("설정 파일 JSON 오류 %s: %s" % (p, e))
-            return {}
-    return {}
+def load_config(force=False):
+    """설정을 읽는다. 기동 시 한 번 읽어 두고, 파일이 바뀌면(수정시각·크기) 다시 읽는다.
+    force=True면 무조건 다시 읽는다 — id/pw로 들어오는 요청은 방금 추가한 자격도 통해야 한다."""
+    with _CFG_LOCK:
+        for p in _SEARCH_PATHS:
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            stamp = (p, st.st_mtime_ns, st.st_size)
+            if not force and _CFG["stamp"] == stamp:
+                return _CFG["cfg"]
+            try:
+                with open(p, encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except OSError:
+                continue
+            except ValueError as e:
+                _log("설정 파일 JSON 오류 %s: %s" % (p, e))
+                return {}
+            _CFG["stamp"], _CFG["cfg"] = stamp, cfg if isinstance(cfg, dict) else {}
+            return _CFG["cfg"]
+        _CFG["stamp"], _CFG["cfg"] = None, {}
+        return {}
 
 
 def _sec(cfg, name):
@@ -177,9 +203,39 @@ def check_token(token, cfg=None):
     return uid
 
 
-def temp_login(tid, pw, cfg=None):
-    """임시 자격 확인. 맞으면 토큰, 아니면 None."""
+def token_from(headers, cfg=None):
+    """요청에서 통행증 찾기. 헤더가 우선이고 없으면 쿠키를 본다.
+    페이지 이동에는 헤더를 붙일 수 없으므로 쿠키가 있어야 서버가 같은 판단을 한다."""
+    try:
+        tok = (headers.get("X-Access-Token") or "").strip()
+    except AttributeError:
+        return ""
+    if tok:
+        return tok
+    raw = headers.get("Cookie") or ""
+    for part in raw.split(";"):
+        name, _, val = part.strip().partition("=")
+        if name == COOKIE_NAME and val.strip():
+            return val.strip()
+    return ""
+
+
+def cookie_header(token, cfg=None):
+    """통행증을 담는 Set-Cookie 값. 토큰이 비면 즉시 만료시킨다."""
     cfg = load_config() if cfg is None else cfg
+    if not token:
+        return "%s=; Path=/; Max-Age=0; SameSite=Lax" % COOKIE_NAME
+    try:
+        hours = float(_etc(cfg, "session_hours", DEFAULT_SESSION_HOURS) or DEFAULT_SESSION_HOURS)
+    except (TypeError, ValueError):
+        hours = DEFAULT_SESSION_HOURS
+    return "%s=%s; Path=/; Max-Age=%d; SameSite=Lax" % (COOKIE_NAME, token, int(hours * 3600))
+
+
+def temp_login(tid, pw, cfg=None):
+    """임시 자격 확인. 맞으면 토큰, 아니면 None.
+    방금 추가한 자격도 바로 통하도록 파일을 강제로 다시 읽는다."""
+    cfg = load_config(force=True) if cfg is None else cfg
     tid = str(tid or "").strip()
     pw = str(pw or "")
     for row in (cfg.get("temp") or []):
@@ -192,6 +248,34 @@ def temp_login(tid, pw, cfg=None):
 
 
 # ---- 판단 ---------------------------------------------------------------------
+def status(cfg=None):
+    """지금 제어가 켜졌는지, 어느 파일을 읽었는지. 기동 로그와 진단용."""
+    cfg = load_config() if cfg is None else cfg
+    allow = _sec(cfg, "allow")
+    found = next((p for p in _SEARCH_PATHS if os.path.exists(p)), "")
+    return {
+        "enabled": enabled(cfg),
+        "config_path": CONFIG_PATH,
+        "config_found": found,
+        "allow_id": len(_list(allow.get("id"))),
+        "allow_dept": len(_list(allow.get("dept"))),
+        "admin_id": len(_list(_sec(cfg, "admin").get("id"))),
+        "temp": len([r for r in (cfg.get("temp") or []) if isinstance(r, dict)]),
+    }
+
+
+def log_status():
+    """기동 시 한 줄. 켜졌는지 꺼졌는지를 눈으로 바로 확인할 수 있어야 한다."""
+    st = status()
+    if st["enabled"]:
+        _log("접근 제어 켜짐 — 허용 id %d개 부서 %d개, 관리자 %d명, 임시 %d개 (%s)"
+             % (st["allow_id"], st["allow_dept"], st["admin_id"], st["temp"], st["config_found"]))
+    else:
+        _log("접근 제어 꺼짐 — 아무도 막지 않습니다. 켜려면 %s 에 allow.id 를 채우세요%s"
+             % (st["config_path"], "" if st["config_found"] else " (지금 그 파일이 없습니다)"))
+    return st
+
+
 def decide(user, token=None, cfg=None):
     """들여보낼지 판단한다.
 

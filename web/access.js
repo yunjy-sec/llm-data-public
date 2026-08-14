@@ -52,15 +52,22 @@
 
   // ---- 차단: 별도 페이지로 보낸다 ------------------------------------------------
   // 오버레이로 덮으면 그 아래 내용이 잠깐 보인다. 아예 다른 주소로 넘긴다.
-  var DENIED = "denied.html";
-
   function onDeniedPage() {
     return /(^|\/)denied\.html$/.test(location.pathname);
   }
 
+  // 차단 페이지 주소. 서버가 같은 주소에서 차단 페이지를 내려주므로 보통 여기까지 오지 않는다.
+  // (서버 차단을 꺼둔 구성에서만 쓰이는 보조 수단)
+  // 프록시 뒤에서 어긋나지 않게 현재 경로 기준으로 만든다 — 절대 경로는 prefix를 잃는다.
+  function deniedUrl() {
+    var base = location.pathname.replace(/\/(index|denied)\.html$/, "/");
+    if (base.charAt(base.length - 1) !== "/") base += "/";
+    return base + "denied.html";
+  }
+
   function goDenied() {
     if (onDeniedPage()) return;
-    location.replace(DENIED);
+    location.replace(deniedUrl());
   }
 
   // 판정이 끝나기 전에는 화면을 감춘다. 판정이 오래 걸리거나 실패하면 그대로 보여준다.
@@ -132,19 +139,58 @@
     });
   }
 
+  // 임시 접속 표시와 로그아웃 — 헤더의 사용자 표시 왼쪽에 붙인다.
+  // 임시 접속은 통행증일 뿐이라 SSO 표시(id 이름 부서)는 그대로 두고, 이 칩만 따로 보여준다.
+  function renderTempBadge(info) {
+    var host = document.querySelector("header .statusbar");
+    var box = document.getElementById("acc-temp-box");
+    var temp = info && info.via === "temp";
+    if (!host || (!temp && !box)) return;
+    if (!temp) { box.remove(); return; }
+    if (!box) {
+      box = document.createElement("span");
+      box.id = "acc-temp-box";
+      box.className = "acctemp";
+      // guest 표시 왼쪽. 단 열쇠(허가 설정)보다는 뒤 — 열쇠가 이 묶음의 맨 왼쪽이다.
+      var key = document.getElementById("acc-admin-btn");
+      host.insertBefore(box, key ? key.nextSibling : host.firstChild);
+    }
+    box.innerHTML = '<span class="acctag">임시</span><b id="acc-temp-id"></b>' +
+      '<button id="acc-logout" type="button" title="임시 접속을 끝냅니다">로그아웃</button>';
+    box.querySelector("#acc-temp-id").textContent = info.temp_id || "";
+    box.querySelector("#acc-logout").addEventListener("click", logout);
+  }
+
+  function logout() {
+    setToken("");
+    api("api/access/logout", { method: "POST" })
+      .catch(function (e) { console.log("[access] 로그아웃 실패", String(e)); })
+      .then(function () { location.reload(); });
+  }
+
   function renderAdminButton(on) {
     var b = document.getElementById("acc-admin-btn");
     if (!on) { if (b) b.remove(); return; }
     if (b) return;
-    var host = document.querySelector("header .brand") || document.body;
+    // 이 버튼은 LLM이 아니라 로그인(SSO)에 딸린 기능이다 — brand의 ℹ ⚙ 옆이 아니라
+    // 로그인 묶음의 맨 왼쪽(임시 표시보다도 앞)에 둔다.
+    var bar = document.querySelector("header .statusbar");
+    var first = document.getElementById("acc-temp-box")
+      || document.querySelector("header .statusbar .loginid");
+    var host = (first && first.parentNode) || bar || document.body;
     b = document.createElement("button");
     b.id = "acc-admin-btn";
     b.type = "button";
     b.className = "iconbtn gearbtn";
     b.title = "사용자 허가 설정";
-    b.textContent = "🔑";
+    // ℹ ⚙ 와 같은 규격의 인라인 SVG — 이모지를 쓰면 색과 크기가 그 둘과 어긋난다
+    b.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" ' +
+      'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<circle cx="7.5" cy="15.5" r="4.5"></circle>' +
+      '<path d="M10.7 12.3 21 2"></path><path d="M17 6l3 3"></path><path d="M14 9l3 3"></path>' +
+      "</svg>";
     b.addEventListener("click", openAdmin);
-    host.appendChild(b);
+    if (first) host.insertBefore(b, first); else host.appendChild(b);
   }
 
   // ---- 판단 --------------------------------------------------------------------
@@ -153,6 +199,7 @@
       state.checked = true;
       state.admin = !!info.admin;
       if (info.allowed) reveal(); else goDenied();
+      renderTempBadge(info);
       renderAdminButton(!!info.admin);
       return info;
     }).catch(function (e) {
@@ -163,7 +210,7 @@
     });
   }
 
-  window.accessControl = { check: check, openAdmin: openAdmin, token: token, clear: function () { setToken(""); } };
+  window.accessControl = { check: check, openAdmin: openAdmin, token: token, logout: logout };
 
   hideUntilChecked();   // 판정 전 내용 노출 방지 — script 태그가 읽히는 즉시 건다
   if (document.readyState === "loading") {

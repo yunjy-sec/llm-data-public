@@ -20,10 +20,21 @@
    처럼 클래스에 display를 주면 hidden이 무시돼 엉뚱한 탭에 요소가 남는 문제를 원천 차단 */
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
-header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; z-index: 5; }
+/* 최상단 바는 한 줄을 유지한다. 항목이 늘어도 접히지 않고, 좁아지면 긴 항목부터 줄어든다. */
+header { display: flex; flex-wrap: nowrap; gap: 6px 12px; align-items: center; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; z-index: 5; overflow: hidden; }
+header .brand { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; }
+header .brand h1 { white-space: nowrap; }
 h1 { font-size: 18px; margin: 0; display: inline; }
 .sub { color: var(--muted); margin-left: 8px; font-size: 12.5px; }
-.statusbar { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+/* 줄바꿈되어도 오른쪽에 붙어 있어야 한다. margin-left:auto가 없으면 한 줄 아래로 내려가면서
+   왼쪽으로 정렬되고, 좁은 화면에서는 폭이 넘친다. */
+.statusbar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap;
+  gap: 8px; font-size: 12.5px; margin-left: auto; min-width: 0; }
+/* 좁아지면 이 둘이 먼저 줄어든다 — 로그인 표시와 열쇠는 끝까지 남긴다 */
+.statusbar .llmstat { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statusbar .modelbox { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px; }
+.statusbar .modelbox select { max-width: 132px; }
+.statusbar .loginid, .statusbar .acctemp, .statusbar #acc-admin-btn, .statusbar #svc-dot { flex: 0 0 auto; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--wait); display: inline-block; }
 .dot.ok { background: var(--ok); } .dot.err { background: var(--err); } .dot.warn { background: #d98207; }
 /* 로그인 표시: LED와 id 이름 부서를 한 줄로 (좁은 폭에서 LED가 윗줄로 밀리지 않게) */
@@ -541,3 +552,13 @@ button.stopbtn:hover { filter: brightness(1.08); }
 .accgate .accerr { color: var(--err); font-size: 11.5px; margin: 10px 0 0; }
 .accgate .accpath { font-family: var(--mono); font-size: 10px; color: var(--muted); margin: 10px 0 0;
   word-break: break-all; }
+/* 허가 설정(열쇠)은 로그인 표시에 딸린 버튼이라 바짝 붙인다 — 헤더가 한 줄을 넘기지 않게 */
+#acc-admin-btn { margin-right: -4px; padding: 1px 2px; }
+/* 임시 접속 표시와 로그아웃 (헤더의 사용자 표시 왼쪽) */
+.acctemp { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; font-size: 11.5px; }
+.acctemp .acctag { border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
+  color: var(--muted); font-size: 9.5px; font-weight: 700; }
+.acctemp b { color: var(--fg); font-weight: 600; }
+.acctemp button { font: inherit; font-size: 10.5px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); color: var(--muted); cursor: pointer; }
+.acctemp button:hover { border-color: var(--err); color: var(--err); }

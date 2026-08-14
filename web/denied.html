@@ -2,7 +2,9 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- interactive-widget=resizes-content: 키보드가 올라와도 레이아웃 뷰포트가 함께 줄어
+     입력칸이 가려지거나 화면이 튀지 않는다 (앱 화면과 같은 설정) -->
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>허가되지 않은 사용자입니다</title>
 <style>
 /* 이 페이지는 자체 완결이다 — styles.css나 app.js에 기대지 않는다 */
@@ -13,9 +15,12 @@
           --accent:#6ca4f8; --err:#f97066; }
 }
 * { box-sizing: border-box; }
-body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-  padding:20px; background:var(--bg); color:var(--fg);
+/* 세로 중앙 정렬은 키보드가 올라올 때 상자가 움직여 화면이 떨린다.
+   위에서부터 쌓되 여유 공간이 있을 때만 가운데로 내린다. */
+body { margin:0; min-height:100vh; min-height:100dvh; display:flex; align-items:flex-start;
+  justify-content:center; padding:24px 20px 40px; background:var(--bg); color:var(--fg);
   font:14px/1.5 "Malgun Gothic","Apple SD Gothic Neo",sans-serif; }
+@media (min-height: 620px) { body { align-items:center; padding-bottom:24px; } }
 .box { width:100%; max-width:380px; background:var(--card); border:1px solid var(--line);
   border-radius:12px; padding:26px 22px; }
 h1 { font-size:17px; margin:0 0 12px; }
@@ -73,9 +78,19 @@ button:disabled { opacity:.6; cursor:default; }
       });
   }
 
-  // 이미 허가된 상태로 이 주소에 들어왔다면 곧바로 되돌려보낸다
+  // 이미 허가된 상태로 이 주소에 들어왔다면 되돌려보낸다.
+  // 단, 서버가 이 페이지를 내려준 것이면(=서버는 차단으로 판단) 다시 이동하지 않는다.
+  // 서버와 화면의 판단이 엇갈리면 무한 새로고침이 된다.
+  var servedHere = !/(^|\/)denied\.html$/.test(location.pathname);
   api("api/access/check").then(function (info) {
-    if (info && info.allowed) { location.replace(HOME); return; }
+    if (info && info.allowed && !servedHere) { location.replace(HOME); return; }
+    if (info && info.allowed && servedHere) {
+      // 서버는 막았는데 화면은 통과 — 통행증이 쿠키로 전달되지 않은 상태다
+      document.getElementById("who").textContent = "다시 접속해 주세요";
+      document.getElementById("meta").textContent =
+        "통행증이 이 브라우저에 저장되지 않았습니다 (쿠키 차단 여부를 확인하세요)";
+      return;
+    }
     var u = (info && info.user) || {};
     document.getElementById("who").innerHTML =
       (u.id && u.id !== "guest")
@@ -85,6 +100,18 @@ button:disabled { opacity:.6; cursor:default; }
   }).catch(function (e) {
     console.log("[access] 확인 실패", String(e));
     document.getElementById("who").textContent = "로그인 정보를 확인하지 못했습니다";
+  });
+
+  // 포커스 시 입력칸이 키보드에 가리면 그때만 한 번 스크롤한다 (반복 방지)
+  ["tid", "tpw"].forEach(function (id) {
+    var el = document.getElementById(id);
+    el.addEventListener("focus", function () {
+      setTimeout(function () {
+        var r = el.getBoundingClientRect();
+        var h = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+        if (r.bottom > h - 8) el.scrollIntoView({ block: "center" });
+      }, 250);
+    });
   });
 
   document.getElementById("f").addEventListener("submit", function (e) {
@@ -101,7 +128,7 @@ button:disabled { opacity:.6; cursor:default; }
       })
       .then(function (info) {
         if (!info || !info.allowed) throw new Error("임시 접속이 거부되었습니다");
-        location.replace(HOME);
+        location.replace(HOME);   // 쿠키가 심어졌으므로 이번 이동은 서버도 통과시킨다
       })
       .catch(function (e2) {
         console.log("[access] 임시 접속 실패", String(e2));
@@ -111,7 +138,8 @@ button:disabled { opacity:.6; cursor:default; }
       });
   });
 
-  document.getElementById("tid").focus();
+  // 자동 포커스는 넣지 않는다. 모바일에서 로드 직후 포커스를 주면 키보드가 올라왔다
+  // 내려가기를 반복하며 입력이 불가능해진다. 사용자가 직접 눌러 시작한다.
 })();
 </script>
 </body>
