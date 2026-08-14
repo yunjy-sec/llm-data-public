@@ -74,7 +74,91 @@ env 미설정 시 실제 경로는 PERSIST 대상 전부가 `<repo>/data` 아래
 각 영역의 root와 env 적용 여부가 표시되고, env가 빠져 있으면 경고가 함께 표시된다.
 영역 구분의 배경은 `DEPLOY.md`에 있다.
 
-## 동작 키 — 기본 구현이 직접 사용
+## 설정 구조 — 모델마다 `url` · `header` · `body` · `etc` 한 벌
+
+특별한 환경(게이트웨이)용 설정은 **모델마다 온전한 구조를 하나씩** 갖는다.
+최상위 키 이름이 곧 모델 이름이고, 그 안에 그 모델의 `url`·`header`·`body`·`etc`가 들어간다.
+모델 목록은 이 최상위 키들에서 잡히므로 `models` 같은 별도 키를 적지 않는다.
+
+요청을 결정하는 것은 **`url`·`header`·`body` 3개**다. 여기 적은 것이 그대로 나간다.
+`etc`는 예외로 두는 자유 영역이며 **요청에 실리지 않는다**.
+
+| 키 | 내용 |
+|---|---|
+| `url` | 이 모델의 전체 endpoint |
+| `header` | 실제 요청 헤더. 이름·값 모두 적은 그대로 전송(대소문자 보존), 값은 문자열 |
+| `body` | 요청 본문 항목. `model`도 여기 둔다 |
+| `etc` | 설명 등 자유 기재. 전송되지 않는다. `timeout`·`probe_timeout`·`response_schema`를 넣으면 그 모델에 그 값으로 동작한다 |
+
+**header** — `Content-Type`, `Accept`, `x-dep-ticket`, `Send-System-Name`, `User-Type`, `User-Id`가
+기본이다. 값에 쓰는 자리표시자는 요청마다 치환된다 — `{uuid}`, `{uuid_hex}`, `{ts}`.
+자격 정보(`ticket`·`key`·`token`·`auth` 등이 이름에 든 헤더)는 요청 전문 화면에서 `****`로 마스킹된다.
+
+**disabled** — `header`와 `body` 맨 아래의 `disabled` 블록은 **적어만 두고 전송하지 않는다.**
+켜려면 그 줄을 `disabled` 밖으로 옮기고, 끄려면 도로 넣는다.
+
+JSON에는 주석이 없고, 화면의 설정 탭에서 저장하면 파일이 통째로 다시 기록된다
+(`llm.py`의 `save_config`). 그래서 꺼둔 항목을 주석이 아니라 **데이터로** 남긴다 —
+YAML로 바꿔도 저장 한 번에 주석은 사라지므로 형식을 바꾼다고 풀리는 문제가 아니다.
+
+- `header.disabled` — 선택 헤더. 예: `Chat-Id`, `Prompt-Msg-Id`, `Completion-Msg-Id`
+- `body.disabled` — 설정이 관여하지 않는 본문 항목. 예: `messages`, `messages.role`, `messages.content`
+  (대화 내용은 서비스가 만들어 넣는다)
+
+**body** — 값의 형태가 곧 동작이다.
+
+| 값 형태 | 동작 | 예 |
+|---|---|---|
+| 스칼라 | 매 요청 그대로 전송 | `"model": "gpt-oss-120b"`, `"max_tokens": 4096`, `"stream": false` |
+| `{"min","max","step"}` | 그 범위의 수를 화면에서 고른다 | `"temperature": {"min":0,"max":1,"step":0.1}` |
+| `["a","b"]` | 그 목록 중 하나를 고른다 | `"reasoning_effort": ["low","medium","high"]` |
+
+선택 항목은 **고르지 않으면 보내지 않는다**(게이트웨이 기본값 사용). 범위 밖 값이나 목록에 없는
+값은 서버가 거부한다. 화면의 드롭다운·숫자 입력은 이 스펙에서 자동 생성되므로 UI 수정이 필요 없다.
+모델을 바꾸면 그 모델의 프로필 전체(endpoint·헤더·body·timeout)가 함께 바뀐다.
+
+### 예시 — 게이트웨이 환경
+
+```json
+{
+  "gpt-oss-120b": {
+    "url": "https://apigw.example.com/llm/v1/chat/completions",
+    "header": {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "x-dep-ticket": "credential:TICKET-...",
+      "Send-System-Name": "playground",
+      "User-Type": "AD_ID",
+      "User-Id": "yunjy",
+      "disabled": {
+        "Chat-Id": "{uuid}",
+        "Prompt-Msg-Id": "{uuid}",
+        "Completion-Msg-Id": "{uuid}"
+      }
+    },
+    "body": {
+      "model": "gpt-oss-120b",
+      "max_tokens": 4096,
+      "stream": false,
+      "temperature": { "min": 0, "max": 1, "step": 0.1 },
+      "reasoning_effort": ["low", "medium", "high"],
+      "disabled": {
+        "messages": "대화 내용은 서비스가 만들어 넣는다",
+        "messages.role": "user | assistant | system",
+        "messages.content": "메시지 본문"
+      }
+    },
+    "etc": {
+      "설명": "최상위 키 이름이 모델 이름이다. etc는 요청에 실리지 않는다.",
+      "timeout": 900
+    }
+  }
+}
+```
+
+모델을 늘릴 때는 같은 모양의 블록을 하나 더 붙인다. 화면의 모델 드롭다운에 그 순서대로 나온다.
+
+## 그 외 키 — 과거 구성·모델별 URL 경로 호환
 
 | 키 | 의미 |
 |---|---|

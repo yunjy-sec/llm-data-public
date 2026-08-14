@@ -1,49 +1,40 @@
 {
-  "_설명": "LLM 연결 설정. 토큰은 코드가 아니라 이 파일(headers) 또는 환경변수(api_key_env)에 둔다.",
-  "base_url": "http://127.0.0.1:8820",
-  "model": "sonnet",
-  "models": [
-    "fable",
-    "opus",
-    "sonnet",
-    "haiku",
-    "gpt-5.6",
-    "gpt-5.5",
-    "gpt-5.3",
-    "o3"
-  ],
-  "url": "",
-  "api_base_url": "",
-  "headers": {
-    "Authorization": "Bearer <발급-토큰>",
-    "User-Type": "AD_ID"
-  },
-  "header_map": {
-    "credential_key": "x-dep-ticket"
-  },
-  "api_key_env": "LLM_DATA_API_KEY",
-  "timeout": 300,
-  "response_schema": false,
-  "extra_payload": {
-    "temperature": 0
-  },
-  "model_options": {
-    "gpt-oss-120b": {
-      "temperature": [
-        "0",
-        "0.3",
-        "0.7",
-        "1"
-      ],
-      "reasoning_effort": []
+  "gpt-oss-120b": {
+    "url": "https://apigw.example.com/llm/v1/chat/completions",
+    "header": {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "x-dep-ticket": "credential:TICKET-...",
+      "Send-System-Name": "playground",
+      "User-Type": "AD_ID",
+      "User-Id": "yunjy",
+      "disabled": {
+        "Chat-Id": "{uuid}",
+        "Prompt-Msg-Id": "{uuid}",
+        "Completion-Msg-Id": "{uuid}"
+      }
+    },
+    "body": {
+      "model": "gpt-oss-120b",
+      "max_tokens": 4096,
+      "stream": false,
+      "temperature": { "min": 0, "max": 1, "step": 0.1 },
+      "reasoning_effort": ["low", "medium", "high"],
+      "disabled": {
+        "messages": "대화 내용은 서비스가 만들어 넣는다",
+        "messages.role": "user | assistant | system",
+        "messages.content": "메시지 본문"
+      }
+    },
+    "etc": {
+      "설명": "최상위 키 이름이 모델 이름이다. 모델마다 url header body etc 한 벌을 온전히 갖는다.",
+      "url": "이 모델의 전체 endpoint를 그대로 적는다.",
+      "header": "적은 이름과 값 그대로 전송된다(대소문자 보존). 값은 모두 문자열. {uuid} {uuid_hex} {ts}는 요청마다 치환된다.",
+      "body 고정값": "스칼라(model, max_tokens, stream)는 매 요청 그대로 실린다.",
+      "body 선택값": "{min,max,step}이면 그 범위의 수, [\"a\",\"b\"]면 그 목록 중 하나로 화면에 입력칸이 생긴다. 고르지 않으면 보내지 않는다.",
+      "disabled": "header와 body 안의 disabled 블록은 적어만 두고 전송하지 않는다. 켜려면 그 줄을 disabled 밖으로 옮긴다.",
+      "etc": "여기에 쓴 것은 전송되지 않는다. timeout, probe_timeout, response_schema를 넣으면 이 모델에 그 값으로 동작한다.",
+      "timeout": 900
     }
-  },
-  "_비고": "models: 이 환경에서 쓸 모델 목록(미지정 시 기본 목록). api_base_url: 게이트웨이 루트, /v1로 끝나면 /chat/completions만 덧붙이고 모델은 body의 model 필드로 보낸다. timeout: LLM 호출 대기(초), probe_timeout: 상태 조회·취소 등 보조 호출(초). credential_key/send_system_name/user_id는 값만 채우면 각각 x-dep-ticket/Send-System-Name/User-Id 헤더로 전송된다. header_map은 게이트웨이가 다른 이름을 요구할 때만 쓴다(선택). headers의 이름·값은 대소문자 그대로 전송되며 header_map보다 우선한다.",
-  "OPENAI_API_KEY": "dummy",
-  "credential_key": "credential:TICKET-",
-  "send_system_name": "playground",
-  "env_model": "gpt-oss-120b",
-  "user_id": "",
-  "user_pw": "",
-  "probe_timeout": 5
+  }
 }

@@ -1,6 +1,21 @@
 """OpenAI 호환 LLM API 게이트웨이 (stdlib only).
 
 설정: config/llm.json (env LLM_DATA_CONFIG로 경로 재지정 가능)
+
+권장 구성은 4개 키다. url·header·body가 요청을 그대로 결정하고, etc는 전송되지 않는다.
+- url:    전체 endpoint
+- header: 실제 요청 헤더. 적은 이름과 값 그대로 전송된다(대소문자 보존, 값은 문자열).
+          {uuid} {uuid_hex} {ts}는 요청마다 치환된다.
+- body:   요청 본문 항목. 스칼라는 고정값, {"min","max","step"}는 범위 선택,
+          ["a","b"]는 목록 선택(화면 드롭다운). 고르지 않은 선택 항목은 보내지 않는다.
+          model도 여기에 둔다.
+- header/body 안의 disabled: 적어만 두고 전송하지 않는 블록. JSON은 주석이 없고
+          화면에서 저장하면 파일이 다시 기록되므로, 꺼둔 항목을 데이터로 남긴다.
+          켜려면 그 줄을 disabled 밖으로 옮긴다.
+- etc:    요청에 실리지 않는 자유 영역(설명). timeout·probe_timeout·response_schema·
+          models·api_key_env는 여기 넣어도 읽는다(최상위 키가 우선).
+
+아래는 그 외/과거 키. 모델별 URL 경로를 쓰는 서버(llm-api) 호환을 위해 유지한다.
 - base_url: LLM API 루트 (기본 http://127.0.0.1:8820 = llm-api)
 - model:    서비스 id (fable|opus|sonnet|haiku|gpt-5.6|...)
 - url:      지정 시 base_url/model 조합 대신 이 주소를 그대로 사용
@@ -23,6 +38,7 @@ import http.client
 import json
 import os
 import time
+import uuid
 from urllib.parse import urlsplit
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -65,10 +81,21 @@ def load_config():
             continue
     if not isinstance(cfg, dict):
         cfg = {}
-    cfg.setdefault("base_url", "http://127.0.0.1:8820")
-    cfg.setdefault("model", "sonnet")
-    cfg.setdefault("timeout", 300)
-    cfg.setdefault("response_schema", False)
+    # 모델 프로필 구성이면 기본값을 최상위에 만들지 않는다. 그 값은 각 프로필이 정한다.
+    if profiles(cfg):
+        return cfg
+    # 기본값은 etc/body에 그 값이 없을 때만 채운다. setdefault로 최상위에 키를 만들어 버리면
+    # opt()의 우선순위(최상위 > etc) 때문에 etc.timeout 같은 설정이 영원히 가려진다.
+    etc = cfg.get("etc") if isinstance(cfg.get("etc"), dict) else {}
+    body = cfg.get("body") if isinstance(cfg.get("body"), dict) else {}
+    if not cfg.get("url") and not cfg.get("api_base_url"):
+        cfg.setdefault("base_url", "http://127.0.0.1:8820")
+    if not (isinstance(body.get("model"), str) and body["model"].strip()):
+        cfg.setdefault("model", "sonnet")
+    if "timeout" not in etc:
+        cfg.setdefault("timeout", 300)
+    if "response_schema" not in etc:
+        cfg.setdefault("response_schema", False)
     return cfg
 
 
@@ -85,24 +112,83 @@ DEFAULT_HEADER_MAP = {
 }
 
 
+# header/body 안에서 "적어두되 전송하지 않는" 블록. 켜려면 이 블록 밖으로 옮긴다.
+DISABLED_KEY = "disabled"
+
+# 모델 프로필이 아닌 최상위 키 — 이 이름들은 프로필로 오인하지 않는다
+RESERVED_KEYS = {"url", "header", "headers", "body", "etc", "base_url", "api_base_url", "model",
+                 "models", "model_options", "header_map", "body_by_model", "extra_payload",
+                 "timeout", "probe_timeout", "response_schema", "api_key_env",
+                 "OPENAI_API_KEY", "credential_key", "send_system_name", "env_model",
+                 "user_id", "user_pw", "context_limit_tokens"}
+
+
+def profiles(cfg):
+    """모델 프로필 {모델이름: {url, header, body, etc}}.
+    특별한 환경용 설정은 모델마다 온전한 구조를 하나씩 갖는다. 최상위 키 이름이 곧 모델 이름이다.
+    프로필이 하나도 없으면 {} (url/header/body를 최상위에 둔 단일 구성)."""
+    out = {}
+    if not isinstance(cfg, dict):
+        return out
+    for k, v in cfg.items():
+        if str(k) in RESERVED_KEYS or str(k).startswith("_"):
+            continue
+        if isinstance(v, dict) and any(x in v for x in ("url", "header", "body")):
+            out[str(k)] = v
+    return out
+
+
+def resolve(cfg=None, model=None):
+    """모델 하나에 대한 평평한 설정. 프로필 구성이면 그 모델의 url/header/body/etc를 꺼내
+    최상위 공통 키 위에 얹는다. 프로필이 없으면 설정을 그대로 쓴다."""
+    cfg = cfg if cfg is not None else load_config()
+    profs = profiles(cfg)
+    if not profs:
+        return cfg
+    name = str(model or cfg.get("model") or "").strip()
+    if name not in profs:
+        name = next(iter(profs))
+    prof = profs[name]
+    petc = prof.get("etc") if isinstance(prof.get("etc"), dict) else {}
+    # 프로필의 etc가 최상위 과거 키(timeout 등)보다 우선하도록 같은 이름은 걷어낸다
+    merged = {k: v for k, v in cfg.items() if k not in profs and k not in petc}
+    merged.update(prof)
+    merged["model"] = name
+    return merged
+
+
+def opt(cfg, key, default=None):
+    """부가 설정 조회. 최상위 키가 우선이고 없으면 etc 안을 본다.
+    url/header/body 3키만 쓰는 설정에서 timeout 같은 값을 etc에 모아둘 수 있다."""
+    if key in cfg:
+        return cfg[key]
+    etc = cfg.get("etc")
+    if isinstance(etc, dict) and key in etc:
+        return etc[key]
+    return default
+
+
 def req_timeout(cfg):
     """LLM 호출 타임아웃(초). config의 timeout을 그대로 쓴다(기본 300)."""
+    cfg = resolve(cfg)
     try:
-        return max(1, min(int(cfg.get("timeout", 300)), TIMEOUT_MAX))
+        return max(1, min(int(opt(cfg, "timeout", 300)), TIMEOUT_MAX))
     except (TypeError, ValueError):
         return 300
 
 
 def probe_timeout(cfg):
     """상태 조회·취소 등 보조 호출 타임아웃(초). config의 probe_timeout, 기본 5."""
+    cfg = resolve(cfg)
     try:
-        return max(1, min(int(cfg.get("probe_timeout", 5)), TIMEOUT_MAX))
+        return max(1, min(int(opt(cfg, "probe_timeout", 5)), TIMEOUT_MAX))
     except (TypeError, ValueError):
         return 5
 
 
 EDITABLE_KEYS = ("base_url", "url", "model", "headers", "api_key_env", "timeout", "response_schema",
-                 "extra_payload", "model_options", "models", "header_map", "probe_timeout")
+                 "extra_payload", "model_options", "models", "header_map", "probe_timeout",
+                 "header", "body", "body_by_model", "etc")
 
 # 모델별 추가 설정(요청 payload에 실리는 옵션). 해당 모델이 지원하지 않으면 목록이 비고,
 # 프론트는 그 드롭다운을 비활성 상태로 둔다. config의 "model_options"로 덮어쓸 수 있다.
@@ -112,13 +198,39 @@ EDITABLE_KEYS = ("base_url", "url", "model", "headers", "api_key_env", "timeout"
 DEFAULT_MODELS = ("fable", "opus", "sonnet", "haiku", "gpt-5.6", "gpt-5.5", "gpt-5.3", "o3")
 
 
+def current_model(cfg=None):
+    """이 설정이 쓰는 모델. body.model(스칼라)을 쓰면 최상위 model이 없어도 된다."""
+    cfg = cfg or load_config()
+    m = str(cfg.get("model") or "").strip()
+    profs = profiles(cfg)
+    if profs:
+        return m if m in profs else next(iter(profs))
+    if m:
+        return m
+    b = cfg.get("body")
+    if isinstance(b, dict) and isinstance(b.get("model"), str) and b["model"].strip():
+        return b["model"].strip()
+    return "sonnet"
+
+
 def allowed_models(cfg=None):
     """사용 가능한 모델 목록. config의 models가 있으면 그것을, 없으면 기본 목록을 쓴다.
     현재 model 값이 목록에 없으면 함께 포함해 설정만으로 새 모델을 쓸 수 있게 한다."""
     cfg = cfg or load_config()
-    ms = cfg.get("models")
-    out = [str(m) for m in ms] if isinstance(ms, list) and ms else list(DEFAULT_MODELS)
-    cur = str(cfg.get("model") or "").strip()
+    profs = profiles(cfg)
+    if profs:
+        return tuple(profs)  # 프로필 구성: 최상위 키 이름이 모델 목록이다
+    ms = opt(cfg, "models")
+    if isinstance(ms, list) and ms:
+        out = [str(m) for m in ms]
+    else:
+        b = cfg.get("body")
+        # body.model만 있는 3키 구성이면 그 모델 하나가 전부다
+        if isinstance(b, dict) and isinstance(b.get("model"), str) and b["model"].strip():
+            out = [b["model"].strip()]
+        else:
+            out = list(DEFAULT_MODELS)
+    cur = current_model(cfg)
     if cur and cur not in out:
         out.insert(0, cur)
     return tuple(out)
@@ -136,30 +248,148 @@ DEFAULT_MODEL_OPTIONS = {
 }
 
 
+def body_spec(cfg=None, model=None):
+    """요청 body에 실릴 항목. config의 body(공통) + body_by_model[model](모델별)을 합친다.
+    값이 스칼라면 항상 그 값으로 전송하고, 배열이면 사용자가 고르는 선택지다(UI 드롭다운).
+    구 키 extra_payload도 계속 읽는다(스칼라 취급)."""
+    cfg = resolve(cfg if cfg is not None else load_config(), model)
+    spec = {}
+    legacy = cfg.get("extra_payload")
+    if isinstance(legacy, dict):
+        spec.update(legacy)
+    common = cfg.get("body")
+    if isinstance(common, dict):
+        spec.update(common)
+    per = cfg.get("body_by_model")
+    if isinstance(per, dict) and model:
+        m = per.get(str(model))
+        if isinstance(m, dict):
+            spec.update(m)
+    spec.pop(DISABLED_KEY, None)  # 꺼둔 항목 — 적어만 두고 보내지 않는다
+    return spec
+
+
+def _range_of(v):
+    """{"min":0,"max":1,"step":0.1} 형태면 범위 스펙으로 해석. 아니면 None."""
+    if not isinstance(v, dict):
+        return None
+    if "min" not in v or "max" not in v:
+        return None
+    try:
+        lo, hi = float(v["min"]), float(v["max"])
+    except (TypeError, ValueError):
+        return None
+    try:
+        step = float(v.get("step", 0.1))
+    except (TypeError, ValueError):
+        step = 0.1
+    return {"kind": "range", "min": lo, "max": hi, "step": step if step > 0 else 0.1}
+
+
+def choice_default(spec):
+    """고르지 않았을 때 쓸 값. 범위는 가장 큰 값, 목록은 맨 뒤의 값이다
+    (temperature 1, reasoning_effort high)."""
+    if not isinstance(spec, dict):
+        return None
+    if spec.get("kind") == "enum":
+        vals = spec.get("values") or []
+        return vals[-1] if vals else None
+    if spec.get("kind") == "range":
+        return spec.get("max")
+    return None
+
+
+def body_choices(cfg=None, model=None):
+    """사용자가 고르는 body 항목. {key: {"kind":"enum","values":[...],"default":...}
+    | {"kind":"range","min","max","step","default":...}}
+    스칼라 항목(항상 그 값으로 전송)은 여기 포함되지 않는다."""
+    out = {}
+    for k, v in body_spec(cfg, model).items():
+        if isinstance(v, list) and v:
+            out[k] = {"kind": "enum", "values": [str(x) for x in v]}
+        else:
+            rng = _range_of(v)
+            if rng:
+                out[k] = rng
+    for spec in out.values():
+        spec["default"] = choice_default(spec)
+    return out
+
+
+def choice_value(spec, chosen):
+    """선택값을 실제 전송할 값으로 변환. 고르지 않았으면 기본값(가장 큰 값/맨 뒤 값),
+    스펙에 맞지 않으면 None(미전송)."""
+    if chosen in (None, ""):
+        return choice_default(spec)
+    if spec.get("kind") == "enum":
+        for v in spec.get("values") or []:
+            if str(v) == str(chosen):
+                return v
+        return None
+    if spec.get("kind") == "range":
+        try:
+            x = float(chosen)
+        except (TypeError, ValueError):
+            return None
+        if x < spec["min"] or x > spec["max"]:
+            return None
+        return x
+    return None
+
+
 def model_options(cfg=None):
-    """모델별 추가 설정 목록 {model: {temperature:[...], reasoning_effort:[...]}}."""
+    """모델별 선택 옵션 {model: {key: [값...]}}. body/body_by_model의 배열 항목에서 도출한다.
+    config에 body가 없으면 기본 목록(DEFAULT_MODEL_OPTIONS)과 구 model_options를 쓴다."""
     cfg = cfg or load_config()
-    out = {k: {kk: list(vv) for kk, vv in v.items()} for k, v in DEFAULT_MODEL_OPTIONS.items()}
+    models = allowed_models(cfg)
+    profs = profiles(cfg)
+    out = {}
+    for m in models:
+        rc = resolve(cfg, m)
+        if profs or isinstance(rc.get("body"), dict) or isinstance(rc.get("body_by_model"), dict):
+            out[str(m)] = body_choices(rc, m)
+        else:
+            base = DEFAULT_MODEL_OPTIONS.get(str(m)) or {}
+            out[str(m)] = {k: {"kind": "enum", "values": [str(x) for x in v]}
+                           for k, v in base.items() if v}
+    # 구 model_options는 하위 호환으로 계속 덮어쓴다 (배열 = enum)
     override = cfg.get("model_options")
     if isinstance(override, dict):
         for m, opts in override.items():
             if not isinstance(opts, dict):
                 continue
-            cur = out.setdefault(str(m), {"temperature": [], "reasoning_effort": []})
-            for key in ("temperature", "reasoning_effort"):
-                if isinstance(opts.get(key), list):
-                    cur[key] = [str(x) for x in opts[key]]
+            cur = out.setdefault(str(m), {})
+            for key, vals in opts.items():
+                if isinstance(vals, list) and vals:
+                    cur[str(key)] = {"kind": "enum", "values": [str(x) for x in vals]}
+    # 어느 경로로 만들어졌든 기본값(가장 큰 값/맨 뒤 값)을 붙여 화면과 서버가 같은 값을 쓴다
+    for opts in out.values():
+        for spec in opts.values():
+            spec["default"] = choice_default(spec)
     return out
 
 
-def option_values(model, key, cfg=None):
-    return (model_options(cfg).get(str(model)) or {}).get(key) or []
+def option_spec(model, key, cfg=None):
+    return (model_options(cfg).get(str(model)) or {}).get(key)
 
 # 이 환경에서는 사용하지 않지만 다른 환경 연동 시 쓰는 설정 — 값을 그대로 보존한다
 # (빈 문자열도 유지; user_id/user_pw처럼 자리만 잡아두는 키가 있음)
 PASSTHROUGH_KEYS = ("OPENAI_API_KEY", "credential_key", "send_system_name", "env_model",
                     "api_base_url", "user_id", "user_pw", "_비고",
                     "context_limit_tokens")  # 대화 탭 사용률 계산용 한계 토큰
+
+
+def _header_dict(v):
+    """저장용 header 정규화. 값은 문자열로 강제하되 disabled 블록은 중첩 객체 그대로 둔다."""
+    out = {}
+    for a, b in v.items():
+        if not str(a).strip():
+            continue
+        if str(a) == DISABLED_KEY and isinstance(b, dict):
+            out[str(a)] = {str(x): str(y) for x, y in b.items() if str(x).strip()}
+        else:
+            out[str(a)] = str(b)
+    return out
 
 
 def save_config(new_cfg):
@@ -186,6 +416,17 @@ def save_config(new_cfg):
             ms = [str(x).strip() for x in v if str(x).strip()]
             if ms:
                 out[k] = ms
+        elif k == "header":
+            if not isinstance(v, dict):
+                raise LLMError("E-2004", "header는 객체여야 함", http=400)
+            hd = _header_dict(v)
+            if hd:
+                out[k] = hd
+        elif k in ("body", "body_by_model"):
+            if not isinstance(v, dict):
+                raise LLMError("E-2004", "%s는 객체여야 함" % k, http=400)
+            if v:
+                out[k] = v
         elif k == "header_map":
             if not isinstance(v, dict):
                 raise LLMError("E-2004", "header_map은 객체여야 함", http=400)
@@ -204,6 +445,11 @@ def save_config(new_cfg):
                                 if isinstance(o.get(key), list)}
             if opts:
                 out[k] = opts
+        elif k == "etc":
+            if not isinstance(v, dict):
+                raise LLMError("E-2004", "etc는 객체여야 함", http=400)
+            if v:
+                out[k] = v
         elif k in ("headers", "extra_payload"):
             if not isinstance(v, dict):
                 raise LLMError("E-2004", "%s는 객체여야 함" % k, http=400)
@@ -212,7 +458,21 @@ def save_config(new_cfg):
     for k in PASSTHROUGH_KEYS:
         if k in new_cfg and new_cfg[k] is not None:
             out[k] = str(new_cfg[k])
-    if not out.get("base_url") and not out.get("url"):
+    # 모델 프로필(모델마다 온전한 url/header/body/etc)은 통째로 보존한다. 키 이름이 모델 이름이다.
+    for name, prof in profiles(new_cfg).items():
+        p = {}
+        if prof.get("url"):
+            p["url"] = str(prof["url"]).strip()
+        if isinstance(prof.get("header"), dict):
+            p["header"] = _header_dict(prof["header"])
+        if isinstance(prof.get("body"), dict):
+            p["body"] = prof["body"]
+        if isinstance(prof.get("etc"), dict):
+            p["etc"] = prof["etc"]
+        if not p.get("url"):
+            raise LLMError("E-2004", "%s 프로필에 url이 필요함" % name, http=400)
+        out[name] = p
+    if not (profiles(out) or out.get("base_url") or out.get("url")):
         raise LLMError("E-2004", "base_url 또는 url 중 하나는 필요함", http=400)
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     tmp = CONFIG_PATH + ".tmp"
@@ -225,6 +485,7 @@ def save_config(new_cfg):
 
 
 def chat_url(cfg):
+    cfg = resolve(cfg if cfg is not None else load_config())
     if cfg.get("url"):
         return cfg["url"]
     # api_base_url은 게이트웨이 루트. 모델을 URL 경로가 아니라 요청 body의 model 필드로
@@ -241,10 +502,26 @@ def chat_url(cfg):
         raise LLMError("E-2004", "llm.json에 base_url, api_base_url 또는 url 미설정")
     # llm-api는 모델별 독립 endpoint. 최상위 /v1/...는 response_format을 넘기지 않으므로
     # 구조화 출력을 위해 반드시 모델 경로를 쓴다.
-    return "%s/%s/v1/chat/completions" % (base, cfg.get("model", "sonnet"))
+    return "%s/%s/v1/chat/completions" % (base, current_model(cfg))
+
+
+def _expand(value):
+    """헤더 값의 자리표시자 치환. 요청마다 달라야 하는 상관관계 ID에 쓴다.
+    {uuid} -> 새 UUID4, {uuid_hex} -> 하이픈 없는 UUID4, {ts} -> epoch 밀리초."""
+    v = str(value)
+    if "{" not in v:
+        return v
+    if "{uuid}" in v:
+        v = v.replace("{uuid}", str(uuid.uuid4()))
+    if "{uuid_hex}" in v:
+        v = v.replace("{uuid_hex}", uuid.uuid4().hex)
+    if "{ts}" in v:
+        v = v.replace("{ts}", str(int(time.time() * 1000)))
+    return v
 
 
 def _headers(cfg):
+    cfg = resolve(cfg)
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     # 전달용 키(credential_key 등)를 헤더로: 값만 채우면 DEFAULT_HEADER_MAP 이름으로 전송되고,
     # 게이트웨이가 다른 이름을 쓰면 config의 header_map으로 그 키만 덮어쓴다.
@@ -255,12 +532,15 @@ def _headers(cfg):
         val = cfg.get(str(src))
         if val not in (None, "") and str(name).strip():
             headers[str(name)] = str(val)
-    # 명시적 headers가 가장 구체적이므로 마지막에 덮어쓴다. 이름과 값은 적은 그대로(대소문자 보존)
-    extra = cfg.get("headers")
-    if isinstance(extra, dict):
-        for k, v in extra.items():
-            headers[str(k)] = str(v)
-    key_env = cfg.get("api_key_env")
+    # headers(구 이름) -> header(정규) 순으로 덮어쓴다. 이름과 값은 적은 그대로(대소문자 보존)
+    for key in ("headers", "header"):
+        extra = cfg.get(key)
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                if str(k) == DISABLED_KEY:
+                    continue  # 꺼둔 헤더 — 적어만 두고 보내지 않는다
+                headers[str(k)] = _expand(v)
+    key_env = opt(cfg, "api_key_env")
     if key_env:
         secret = os.environ.get(str(key_env))
         if not secret:
@@ -298,7 +578,7 @@ def masked_headers(cfg):
 
 
 def status():
-    cfg = load_config()
+    cfg = resolve(load_config())
     try:
         url = chat_url(cfg)
     except LLMError as e:
@@ -306,11 +586,12 @@ def status():
     return {
         "config_path": CONFIG_PATH,
         "url": url,
-        "model": cfg.get("model"),
-        "timeout": cfg.get("timeout"),
-        "response_schema": bool(cfg.get("response_schema")),
+        "model": current_model(cfg),
+        "timeout": req_timeout(cfg),
+        "response_schema": bool(opt(cfg, "response_schema")),
         "headers": masked_headers(cfg),
-        "credentials": "environment" if cfg.get("api_key_env") else ("config-headers" if cfg.get("headers") else "none"),
+        "credentials": "environment" if cfg.get("api_key_env") else (
+            "config-headers" if (cfg.get("headers") or cfg.get("header")) else "none"),
     }
 
 
@@ -363,31 +644,26 @@ def chat_messages(messages, schema=None, cfg=None, tag="CHAT", meta_out=None):
     cfg = cfg or load_config()
     url = chat_url(cfg)
     payload = {
-        "model": cfg.get("model", "sonnet"),
+        "model": current_model(cfg),
         "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
     }
-    if schema is not None and cfg.get("response_schema"):
+    if schema is not None and opt(cfg, "response_schema"):
         payload["response_format"] = {
             "type": "json_schema",
             "json_schema": {"name": "llm_data", "schema": schema},
         }
-    extra = cfg.get("extra_payload")
-    if isinstance(extra, dict):
-        payload.update(extra)
-    # 모델 추가 설정 — 해당 모델이 지원하는 값일 때만 payload에 싣는다
-    for key in ("temperature", "reasoning_effort"):
-        val = cfg.get(key)
-        if val in (None, ""):
-            continue
-        if str(val) not in option_values(payload["model"], key, cfg):
-            continue
-        if key == "temperature":
-            try:
-                payload[key] = float(val)
-            except (TypeError, ValueError):
-                pass
+    # body 스펙 적용: 스칼라는 항상 그 값으로, 배열은 사용자가 고른 값일 때만 싣는다.
+    # 선택값은 호출부가 cfg에 넣어 준다(요청 -> chat_cfg_with_options -> cfg).
+    choices = body_choices(cfg, payload["model"])
+    for key, spec in body_spec(cfg, payload["model"]).items():
+        if key == "model":
+            continue  # 모델은 current_model()이 이미 정했다. 여기서 덮으면 화면의 모델 선택이 무시된다
+        if key in choices:
+            val = choice_value(choices[key], cfg.get(key))
+            if val is not None:
+                payload[key] = val
         else:
-            payload[key] = str(val)
+            payload[key] = spec
 
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     if isinstance(meta_out, dict):
@@ -468,6 +744,7 @@ def parse_json_content(text):
 def _api_root(cfg):
     """/cancel, /api/health용 API 루트. base_url 조합이면 base_url 그대로(prefix 보존),
     명시적 url이면 '/v1/chat/completions'와 모델 세그먼트를 벗긴다. 폴백은 scheme+netloc."""
+    cfg = resolve(cfg if cfg is not None else load_config())
     explicit = cfg.get("url") or cfg.get("api_base_url")
     if not explicit:
         return str(cfg.get("base_url", "")).rstrip("/")

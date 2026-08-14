@@ -1526,14 +1526,15 @@
 
   // 모델이 제공하는 추가 설정(요청 payload 옵션)을 카드에 표시 — 없으면 그렇게 명시
   function modelOptsHtml(mid) {
-    const o = modelOptsFor(mid);
-    const parts = [];
-    if ((o.temperature || []).length) {
-      parts.push('<span class="pchip">temperature ' + esc(o.temperature.join(", ")) + "</span>");
-    }
-    if ((o.reasoning_effort || []).length) {
-      parts.push('<span class="pchip">reasoning_effort ' + esc(o.reasoning_effort.join(", ")) + "</span>");
-    }
+    const o = (state.modelOptions || {})[mid] || {};
+    const parts = Object.keys(o).map((k) => {
+      const spec = o[k] || {};
+      const desc = spec.kind === "range"
+        ? spec.min + "~" + spec.max
+        : (spec.values || []).join(", ");
+      const dflt = spec.default === undefined || spec.default === null ? "" : " 기본 " + spec.default;
+      return '<span class="pchip">' + esc(k) + " " + esc(desc) + esc(dflt) + "</span>";
+    });
     return '<div class="mopts">' +
       (parts.length ? parts.join(" ") : '<span class="cmeta">추가 설정 없음</span>') + "</div>";
   }
@@ -1648,36 +1649,88 @@
       esc("LLM_DATA_PERSIST=/data LLM_DATA_RUNTIME=/runtime python server.py --host 0.0.0.0 --port 8821") +
       '</pre><div class="hint">미설정 시 모두 <code>&lt;repo&gt;/data</code>를 씁니다. ' +
       "현재 적용된 실제 경로는 헤더 ⚙(저장 영역)에서 확인하세요.</div></div>" +
-      '<div class="rsec"><h3>동작 키 기본 구현이 직접 사용</h3><div class="tblwrap"><table><tbody>' +
-      row("base_url", "OpenAI 호환 서버 루트. 모델별 경로가 자동으로 붙습니다") +
-      row("url", "전체 endpoint를 직접 지정할 때 (base_url 무시)") +
-      row("model", "요청 payload의 model 값") +
-      row("headers", "요청에 그대로 합쳐지는 헤더 token은 여기 Authorization에") +
-      row("api_key_env", "환경변수 이름으로 token을 줄 때") +
-      row("response_schema", "구조화 출력 강제 여부 <b>미지원 모델이면 false 유지</b>") +
-      row("timeout / extra_payload", "요청 타임아웃 payload 추가 필드") +
+      '<div class="rsec"><h3>설정 구조 모델마다 url header body etc 한 벌</h3>' +
+      '<div class="hint">최상위 키 이름이 곧 <b>모델 이름</b>이고, 그 안에 그 모델의 ' +
+      "<code>url</code> <code>header</code> <code>body</code> <code>etc</code>가 온전히 들어갑니다. " +
+      "모델 목록은 이 최상위 키들에서 잡힙니다. 요청을 결정하는 것은 <code>url</code> " +
+      "<code>header</code> <code>body</code> 3개이고, 여기 적은 것이 그대로 나갑니다. " +
+      "<code>etc</code>는 예외로 두는 자유 영역이며 <b>요청에 실리지 않습니다</b>." +
+      "</div><div class=\"tblwrap\"><table><tbody>" +
+      row("url", "이 모델의 전체 endpoint") +
+      row("header", "실제 요청 헤더. 이름과 값 모두 적은 그대로 전송 (대소문자 보존), 값은 문자열") +
+      row("body", "요청 본문 항목. <code>model</code>도 여기 둡니다") +
+      row("etc", "설명 등 자유 기재. 전송되지 않습니다. <code>timeout</code> <code>probe_timeout</code> " +
+        "<code>response_schema</code>를 넣으면 그 모델에 그 값으로 동작합니다") +
       "</tbody></table></div></div>" +
-      '<div class="rsec"><h3>전달(passthrough) 키 게이트웨이 접목 지점</h3>' +
-      '<div class="hint">아래 키는 설정에 저장 표시만 되고 기본 구현은 <code>OPENAI_API_KEY</code>만 ' +
-      "Authorization Bearer로 씁니다. 게이트웨이형 시스템에 접목할 때 <code>llm.py</code>의 " +
-      "<code>chat_url()</code> <code>_headers()</code>에서 아래처럼 매핑하세요.</div>" +
-      '<div class="tblwrap"><table><tbody>' +
-      row("api_base_url", "게이트웨이 루트 → <code>chat_url()</code>이 이 값을 쓰도록 하거나, <code>url</code>에 전체 endpoint를 기입") +
-      row("env_model", "게이트웨이가 요구하는 모델 이름 → payload의 <code>model</code>로 매핑") +
-      row("credential_key", "자격 티켓 (예: credential:TICKET-…) → 게이트웨이가 요구하는 헤더로 전달") +
-      row("send_system_name", "호출 시스템 식별자 → 게이트웨이가 요구하는 헤더/필드로 전달") +
-      row("user_id / user_pw", "토큰 발급형 게이트웨이용 → 발급 API 호출 후 <code>Authorization</code>에 설정") +
+      '<div class="rsec"><h3>header</h3>' +
+      '<div class="hint">값에 쓰는 <code>{uuid}</code> <code>{uuid_hex}</code> ' +
+      "<code>{ts}</code>는 요청마다 치환됩니다. 자격 정보가 담긴 헤더는 요청 전문에서 <code>****</code>로 " +
+      "마스킹됩니다.</div></div>" +
+      '<div class="rsec"><h3>disabled 적어두되 보내지 않는 블록</h3>' +
+      '<div class="hint"><code>header</code>와 <code>body</code> 맨 아래의 <code>disabled</code> 블록은 ' +
+      "<b>적어만 두고 전송하지 않습니다</b>. 켜려면 그 줄을 <code>disabled</code> 밖으로 옮기고, " +
+      "끄려면 도로 넣습니다. JSON에는 주석이 없고 설정 탭에서 저장하면 파일이 통째로 다시 기록되므로, " +
+      "꺼둔 항목을 주석이 아니라 데이터로 남깁니다.</div><div class=\"tblwrap\"><table><tbody>" +
+      row("header.disabled", "선택 헤더 <code>Chat-Id</code> <code>Prompt-Msg-Id</code> <code>Completion-Msg-Id</code>") +
+      row("body.disabled", "설정이 관여하지 않는 본문 항목 <code>messages</code> <code>messages.role</code> " +
+        "<code>messages.content</code> (대화 내용은 서비스가 만들어 넣습니다)") +
+      "</tbody></table></div></div>" +
+      '<div class="rsec"><h3>body 값의 형태가 곧 동작</h3><div class="tblwrap"><table><tbody>' +
+      row("스칼라", "매 요청 그대로 전송 <code>\"model\": \"gpt-oss-120b\"</code> " +
+        "<code>\"max_tokens\": 4096</code> <code>\"stream\": false</code>") +
+      row("{min, max, step}", "그 범위의 수를 화면에서 고릅니다 " +
+        "<code>\"temperature\": {\"min\":0,\"max\":1,\"step\":0.1}</code>") +
+      row("[\"a\", \"b\"]", "그 목록 중 하나를 고릅니다 " +
+        "<code>\"reasoning_effort\": [\"low\",\"medium\",\"high\"]</code>") +
+      "</tbody></table></div>" +
+      '<div class="hint">선택 항목은 <b>고르지 않으면 보내지 않습니다</b> (게이트웨이 기본값 사용). ' +
+      "입력 프롬프트 위의 드롭다운과 숫자 입력은 이 스펙에서 자동 생성되므로 화면 수정이 필요 없습니다. " +
+      "모델을 바꾸면 그 모델의 프로필 전체(endpoint 헤더 body timeout)가 함께 바뀝니다.</div></div>" +
+      '<div class="rsec"><h3>설정 예시 게이트웨이 환경</h3>' +
+      '<div class="hint">모델을 늘릴 때는 같은 모양의 블록을 하나 더 붙입니다. 화면의 모델 드롭다운에 그 순서대로 나옵니다.</div>' +
+      '<pre class="raw">' +
+      esc('{\n' +
+        '  "gpt-oss-120b": {\n' +
+        '    "url": "https://apigw.example.com/llm/v1/chat/completions",\n' +
+        '    "header": {\n' +
+        '      "Content-Type": "application/json",\n' +
+        '      "Accept": "application/json",\n' +
+        '      "x-dep-ticket": "credential:TICKET-...",\n' +
+        '      "Send-System-Name": "playground",\n' +
+        '      "User-Type": "AD_ID",\n' +
+        '      "User-Id": "yunjy",\n' +
+        '      "disabled": {\n' +
+        '        "Chat-Id": "{uuid}",\n' +
+        '        "Prompt-Msg-Id": "{uuid}",\n' +
+        '        "Completion-Msg-Id": "{uuid}"\n' +
+        '      }\n' +
+        '    },\n' +
+        '    "body": {\n' +
+        '      "model": "gpt-oss-120b",\n' +
+        '      "max_tokens": 4096,\n' +
+        '      "stream": false,\n' +
+        '      "temperature": { "min": 0, "max": 1, "step": 0.1 },\n' +
+        '      "reasoning_effort": ["low", "medium", "high"],\n' +
+        '      "disabled": {\n' +
+        '        "messages": "대화 내용은 서비스가 만들어 넣는다",\n' +
+        '        "messages.role": "user | assistant | system",\n' +
+        '        "messages.content": "메시지 본문"\n' +
+        '      }\n' +
+        '    },\n' +
+        '    "etc": { "설명": "etc는 요청에 실리지 않습니다", "timeout": 900 }\n' +
+        '  }\n' +
+        '}') + "</pre></div>" +
+      '<div class="rsec"><h3>그 외 과거 키</h3><div class="tblwrap"><table><tbody>' +
+      row("base_url", "모델별 URL 경로를 쓰는 서버용 루트 <code>{base_url}/{model}/v1/chat/completions</code>") +
+      row("api_base_url", "게이트웨이 루트. <code>/v1</code>로 끝나면 <code>/chat/completions</code>만 붙입니다") +
+      row("headers / extra_payload", "각각 <code>header</code> <code>body</code>의 옛 이름. 계속 읽습니다") +
+      row("credential_key / send_system_name / user_id", "값만 채우면 <code>x-dep-ticket</code> " +
+        "<code>Send-System-Name</code> <code>User-Id</code> 헤더로 전송됩니다") +
       row("OPENAI_API_KEY", "표준 Bearer token 기본 구현이 그대로 사용") +
-      "</tbody></table></div></div>" +
-      '<div class="rsec"><h3>_headers() 확장 예시</h3><pre class="raw">' +
-      esc('def _headers(cfg):\n headers = {"Content-Type": "application/json"}\n' +
-        ' if cfg.get("credential_key"):\n headers["X-Credential"] = cfg["credential_key"]\n' +
-        ' if cfg.get("send_system_name"):\n headers["X-System-Name"] = cfg["send_system_name"]\n' +
-        ' if cfg.get("user_id") and cfg.get("user_pw"):\n' +
-        ' headers["Authorization"] = "Bearer " + issue_token(\n' +
-        ' cfg["api_base_url"], cfg["user_id"], cfg["user_pw"])\n' +
-        " return headers") + "</pre>" +
-      '<div class="hint">요청 응답 전문(마스킹된 headers 포함)은 변환 작업 이력과 대화 탭에서 항상 확인할 수 있어 ' +
+      "</tbody></table></div>" +
+      '<div class="hint">토큰 발급형 게이트웨이(<code>user_id</code> <code>user_pw</code>로 먼저 토큰을 받는 형태)만 ' +
+      "<code>llm.py</code>의 <code>_headers()</code>에 발급 호출을 넣으면 됩니다. 그 외에는 설정만으로 접목됩니다. " +
+      "요청 응답 전문(마스킹된 headers 포함)은 변환 작업 이력과 대화 탭에서 항상 확인할 수 있어 " +
       "접목 디버깅에 그대로 활용됩니다.</div></div>");
   });
 
@@ -2231,51 +2284,87 @@
   // 옵션 바 정의 — 대화 입력창과 과거 대화 수정 상자가 같은 스펙을 공유한다(패턴화).
   // 레이블은 컨트롤 밖에 항상 표시하고, 드롭다운 안에는 유효한 값만 둔다.
   // 값을 고른 뒤에도 무엇을 고른 것인지 알 수 있어야 하기 때문(model은 값 자체가 자명해 레이블 생략).
-  const OPT_FIELDS = [
-    { id: "model", param: "model", label: "",
-      title: "이 요청에 사용할 모델" },
-    { id: "temp", param: "temperature", label: "temp",
-      title: "temperature 낮을수록 결정적, 높을수록 다양한 표현 (요청 payload에 포함)" },
-    { id: "reason", param: "reasoning_effort", label: "reasoning",
-      title: "reasoning effort 추론에 들이는 강도 (요청 payload에 포함)" },
-  ];
+  // 알려진 body 항목의 짧은 레이블·설명. 목록에 없는 항목은 키 이름을 그대로 쓴다.
+  const OPT_LABELS = {
+    temperature: { label: "temp", title: "temperature 낮을수록 결정적, 높을수록 다양한 표현" },
+    reasoning_effort: { label: "reasoning", title: "reasoning effort 추론에 들이는 강도" },
+    max_tokens: { label: "max tok", title: "생성 최대 토큰 수" },
+    top_p: { label: "top_p", title: "누적 확률 상위 p만 사용" },
+  };
+
+  // 옵션 바 구성은 설정(config의 body)에서 내려온 선택 항목으로 만든다.
+  // 모델 선택 + 선택 가능한 body 항목들 = 이 화면의 옵션 필드.
+  function optFields() {
+    const keys = new Set();
+    Object.keys(state.modelOptions || {}).forEach((m) => {
+      Object.keys((state.modelOptions || {})[m] || {}).forEach((k) => keys.add(k));
+    });
+    const fields = [{ id: "model", param: "model", label: "", title: "이 요청에 사용할 모델" }];
+    [...keys].sort().forEach((k, i) => {
+      const meta = OPT_LABELS[k] || {};
+      fields.push({ id: "opt" + i, param: k, label: meta.label || k,
+        title: (meta.title || k) + " (요청 payload에 포함)" });
+    });
+    return fields;
+  }
   const OPT_DEFAULT_LABEL = "기본값"; // 파라미터를 보내지 않음 — 무효값이 아니라 유효한 선택
 
   function optbarHtml(prefix) {
-    return OPT_FIELDS.map((f) =>
+    return optFields().map((f) =>
       '<span class="optfield" id="' + prefix + "-" + f.id + '-wrap">' +
       (f.label ? '<label class="optlabel" for="' + prefix + "-" + f.id + '">' + esc(f.label) + "</label>" : "") +
-      '<select id="' + prefix + "-" + f.id + '" class="optsel" aria-label="' + esc(f.label || "model") + '"></select>' +
+      '<span class="optslot" id="' + prefix + "-" + f.id + '-slot"></span>' +
       "</span>").join("");
   }
 
-  // select를 채우고, 모델이 지원하지 않는 항목은 필드 전체를 비활성 표시로 전환
+  // 컨트롤을 스펙에 맞게 만든다: enum -> select(유효값만), range -> number 입력(min/max/step).
+  // 모델이 그 항목을 제공하지 않으면 필드 전체를 비활성 표시로 둔다.
   function wireOptbar(prefix, cur) {
     cur = cur || {};
     const el = (id) => document.getElementById(prefix + "-" + id);
+    const fields = optFields();
+    const mSlot = el("model-slot");
+    if (!mSlot) return;
+    mSlot.innerHTML = '<select id="' + prefix + '-model" class="optsel" aria-label="model"></select>';
     const mSel = el("model");
-    if (!mSel) return;
     mSel.innerHTML = (state.modelList || []).map((m) =>
       '<option value="' + esc(m) + '">' + esc(m) + "</option>").join("");
     mSel.value = cur.model || state.defaultModel || (state.modelList || [])[0] || "";
-    mSel.title = OPT_FIELDS[0].title;
+    mSel.title = fields[0].title;
     const apply = () => {
-      const opts = modelOptsFor(mSel.value);
-      OPT_FIELDS.slice(1).forEach((f) => {
-        const sel = el(f.id);
+      const opts = (state.modelOptions || {})[mSel.value] || {};
+      fields.slice(1).forEach((f) => {
+        const slot = el(f.id + "-slot");
         const wrap = el(f.id + "-wrap");
-        if (!sel) return;
-        const list = opts[f.param] || [];
-        // 드롭다운에는 유효 값만 — 맨 위 '기본값'은 파라미터 미전송을 뜻한다
-        sel.innerHTML = '<option value="">' + OPT_DEFAULT_LABEL + "</option>" +
-          list.map((v) => '<option value="' + esc(v) + '">' + esc(v) + "</option>").join("");
-        sel.disabled = !list.length;
-        const tip = list.length ? f.title
-          : mSel.value + " 모델은 " + f.param + " 설정을 제공하지 않습니다";
-        sel.title = tip;
-        if (wrap) { wrap.classList.toggle("off", !list.length); wrap.title = tip; }
+        if (!slot) return;
+        const spec = opts[f.param];
         const want = cur[f.param];
-        if (want && list.indexOf(String(want)) >= 0) sel.value = String(want);
+        if (!spec) {
+          slot.innerHTML = '<select id="' + prefix + "-" + f.id + '" class="optsel" disabled>' +
+            "<option>" + OPT_DEFAULT_LABEL + "</option></select>";
+          const tip = mSel.value + " 모델은 " + f.param + " 설정을 제공하지 않습니다";
+          el(f.id).title = tip;
+          if (wrap) { wrap.classList.add("off"); wrap.title = tip; }
+          return;
+        }
+        if (wrap) { wrap.classList.remove("off"); wrap.title = f.title; }
+        // 고르지 않았을 때의 값은 스펙의 default (범위는 가장 큰 값, 목록은 맨 뒤 값).
+        // 화면에 그 값을 미리 채워 두어 실제 전송되는 값과 보이는 값을 일치시킨다.
+        const dflt = spec.default;
+        if (spec.kind === "range") {
+          slot.innerHTML = '<input id="' + prefix + "-" + f.id + '" class="optnum" type="number" ' +
+            'min="' + spec.min + '" max="' + spec.max + '" step="' + spec.step + '" ' +
+            'placeholder="' + esc(String(dflt === undefined ? OPT_DEFAULT_LABEL : dflt)) + '" title="' +
+            esc(f.title) + " (" + spec.min + "~" + spec.max + ')">';
+          const v = (want !== undefined && want !== "") ? want : dflt;
+          if (v !== undefined && v !== null) el(f.id).value = v;
+        } else {
+          const vals = spec.values || [];
+          slot.innerHTML = '<select id="' + prefix + "-" + f.id + '" class="optsel" title="' + esc(f.title) + '">' +
+            vals.map((v) => '<option value="' + esc(v) + '">' + esc(v) + "</option>").join("") + "</select>";
+          const v = (want && vals.map(String).indexOf(String(want)) >= 0) ? want : dflt;
+          if (v !== undefined && v !== null) el(f.id).value = String(v);
+        }
       });
     };
     apply();
@@ -2285,9 +2374,9 @@
   function readOptbar(prefix) {
     const el = (id) => document.getElementById(prefix + "-" + id);
     const out = { model: el("model") ? el("model").value : $("#model").value };
-    OPT_FIELDS.slice(1).forEach((f) => {
-      const sel = el(f.id);
-      if (sel && !sel.disabled && sel.value) out[f.param] = sel.value;
+    optFields().slice(1).forEach((f) => {
+      const c = el(f.id);
+      if (c && !c.disabled && String(c.value).trim() !== "") out[f.param] = String(c.value).trim();
     });
     return out;
   }

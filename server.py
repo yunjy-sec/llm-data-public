@@ -523,13 +523,16 @@ def chat_cfg_with_options(body, cfg):
         if model not in llm.allowed_models(cfg):
             return None, "지원하지 않는 model"
         cfg = dict(cfg, model=model)
-    for key in ("temperature", "reasoning_effort"):
+    # 선택 가능한 body 항목(설정 body의 배열·범위)만 요청에서 받는다
+    choices = llm.model_options(cfg).get(str(llm.current_model(cfg))) or {}
+    for key, spec in choices.items():
         val = body.get(key)
         if val in (None, ""):
             continue
-        allowed = llm.option_values(cfg.get("model"), key, cfg)
-        if str(val) not in allowed:
-            return None, "'%s'는 %s 모델이 지원하는 %s 값이 아님" % (val, cfg.get("model"), key)
+        if llm.choice_value(spec, val) is None:
+            hint = (", ".join(map(str, spec.get("values") or [])) if spec.get("kind") == "enum"
+                    else "%s~%s" % (spec.get("min"), spec.get("max")))
+            return None, "'%s'는 %s 모델의 %s 허용 범위(%s)가 아님" % (val, llm.current_model(cfg), key, hint)
         cfg = dict(cfg, **{key: str(val)})
     return cfg, None
 
@@ -967,7 +970,7 @@ class Handler(BaseHTTPRequestHandler):
                                    "file": ds["file"]})
             if path == "/api/models":
                 cfg = llm.load_config()
-                return self._json({"models": list(llm.allowed_models(cfg)), "default": cfg.get("model"),
+                return self._json({"models": list(llm.allowed_models(cfg)), "default": llm.current_model(cfg),
                                    "options": llm.model_options(cfg)})
             if path == "/api/jobs":
                 q = parse_qs(u.query)
@@ -1287,7 +1290,7 @@ class Handler(BaseHTTPRequestHandler):
                     req_meta = {}
                     # 새로고침 복원용 in-flight 표시 — 저장 완료(또는 실패)까지 유지
                     _CHAT_PENDING[chat["id"]] = {"message": msg, "ts": now_iso(),
-                                                 "model": cfg.get("model"),
+                                                 "model": llm.current_model(cfg),
                                                  "title": chat.get("title") or "",
                                                  "token": str(body.get("client_token") or "")}
                     try:
@@ -1309,10 +1312,10 @@ class Handler(BaseHTTPRequestHandler):
                                                  "latency_ms": latency_ms, "ts": req_meta["ts"]}
                         chat["last_request"] = req_meta  # 실제 전송된 요청 전문 (headers는 마스킹)
                         history.append({"role": "assistant", "content": content, "ts": now_iso(),
-                                        "model": cfg.get("model"), "latency_ms": latency_ms,
+                                        "model": llm.current_model(cfg), "latency_ms": latency_ms,
                                         "usage": usage or {}})
                         chat["messages"] = history
-                        chat["model"] = cfg.get("model")
+                        chat["model"] = llm.current_model(cfg)
                         chat["updated_at"] = now_iso()
                         save_chat(chat)
                     finally:
@@ -1348,7 +1351,7 @@ class Handler(BaseHTTPRequestHandler):
                     req_meta = {}
                     # 새로고침 복원용 in-flight 표시 (edit_index로 수정-재전송임을 구분)
                     _CHAT_PENDING[cid] = {"message": msg, "ts": now_iso(),
-                                          "model": cfg.get("model"),
+                                          "model": llm.current_model(cfg),
                                           "title": chat.get("title") or "", "edit_index": idx,
                                           "token": str(body.get("client_token") or "")}
                     try:
@@ -1375,7 +1378,7 @@ class Handler(BaseHTTPRequestHandler):
                         for k in [k for k in list(alts.keys()) if k.isdigit() and int(k) > idx]:
                             del alts[k]
                         assistant = {"role": "assistant", "content": content, "ts": now_iso(),
-                                     "model": cfg.get("model"), "latency_ms": latency_ms, "usage": usage or {}}
+                                     "model": llm.current_model(cfg), "latency_ms": latency_ms, "usage": usage or {}}
                         chat["messages"] = msgs[:idx] + [new_user, assistant]
                         entry["variants"].append({"messages": chat["messages"][idx:], "alts": {}})
                         entry["active"] = len(entry["variants"]) - 1
@@ -1384,7 +1387,7 @@ class Handler(BaseHTTPRequestHandler):
                                                  "bytes": req_meta.pop("response_bytes", 0),
                                                  "latency_ms": latency_ms, "ts": req_meta["ts"]}
                         chat["last_request"] = req_meta
-                        chat["model"] = cfg.get("model")
+                        chat["model"] = llm.current_model(cfg)
                         chat["updated_at"] = now_iso()
                         save_chat(chat)
                     finally:
