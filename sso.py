@@ -45,7 +45,9 @@ id를 실제로 가져오면 초록 LED와 함께 id 이름 부서가 표시된�
 자격 정보가 담긴 헤더(Cookie·Authorization 등)는 로그에서 값 대신 길이만 표시된다.
 """
 
+import base64
 import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -166,6 +168,90 @@ def public_config(cfg=None):
             "timeout": _num(_etc(local, "timeout", 3), 3),
         },
     }
+
+
+# ---- 확인된 신원을 브라우저에 기억시키기 -----------------------------------------
+# 1단계(웹소켓)는 브라우저만 할 수 있어서, 서버가 페이지 요청마다 다시 확인할 방법이 없다.
+# 확인에 성공하면 서명한 신원을 쿠키로 심어 두고 다음 요청부터 그것을 쓴다.
+IDENTITY_COOKIE = "llm_sso"
+DEFAULT_IDENTITY_HOURS = 12
+
+
+def _identity_secret(cfg):
+    s = str(_etc(cfg, "secret", "") or "").strip()
+    if s:
+        return s.encode("utf-8")
+    s = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
+    try:
+        cur = load_config()
+        etc = cur.get("etc") if isinstance(cur.get("etc"), dict) else {}
+        etc["secret"] = s
+        cur["etc"] = etc
+        path = next((p for p in (CONFIG_PATH, CONFIG_DEFAULT_PATH) if os.path.exists(p)), CONFIG_PATH)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cur, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception as e:
+        _log("신원 서명 키 저장 실패 (이번 기동 동안만 유효): %s" % e)
+    return s.encode("utf-8")
+
+
+def _sign(secret, payload):
+    return base64.urlsafe_b64encode(
+        hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).digest()).decode().rstrip("=")
+
+
+def identity_cookie(result, cfg=None):
+    """확인된 신원을 담는 Set-Cookie 값. 신원이 없으면 즉시 만료시킨다."""
+    cfg = load_config() if cfg is None else cfg
+    if not result or result.get("source") != "sso" or not result.get("id"):
+        return "%s=; Path=/; Max-Age=0; SameSite=Lax" % IDENTITY_COOKIE
+    try:
+        hours = float(_etc(cfg, "identity_hours", DEFAULT_IDENTITY_HOURS) or DEFAULT_IDENTITY_HOURS)
+    except (TypeError, ValueError):
+        hours = DEFAULT_IDENTITY_HOURS
+    body = json.dumps({"id": result.get("id"), "name": result.get("name"),
+                       "dept": result.get("dept"), "exp": int(time.time() + hours * 3600)},
+                      ensure_ascii=False, sort_keys=True)
+    raw = base64.urlsafe_b64encode(body.encode("utf-8")).decode().rstrip("=")
+    return "%s=%s.%s; Path=/; Max-Age=%d; SameSite=Lax" % (
+        IDENTITY_COOKIE, raw, _sign(_identity_secret(cfg), raw), int(hours * 3600))
+
+
+def identity_from(headers, cfg=None):
+    """쿠키에 담긴 확인된 신원. 서명이 맞고 기한이 남았을 때만 돌려준다."""
+    try:
+        jar = headers.get("Cookie") or ""
+    except AttributeError:
+        return None
+    val = ""
+    for part in jar.split(";"):
+        name, _, v = part.strip().partition("=")
+        if name == IDENTITY_COOKIE:
+            val = v.strip()
+            break
+    if not val or "." not in val:
+        return None
+    raw, _, sig = val.rpartition(".")
+    cfg = load_config() if cfg is None else cfg
+    if not hmac.compare_digest(sig, _sign(_identity_secret(cfg), raw)):
+        return None
+    try:
+        pad = "=" * (-len(raw) % 4)
+        doc = json.loads(base64.urlsafe_b64decode(raw + pad).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(doc, dict) or int(doc.get("exp") or 0) < time.time():
+        return None
+    out = {"id": doc.get("id"), "source": "sso", "service": "up", "via": "cookie"}
+    for k in ("name", "dept"):
+        if doc.get(k):
+            out[k] = doc[k]
+    return out if out["id"] else None
 
 
 def _mask(name, value):

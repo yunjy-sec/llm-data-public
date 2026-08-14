@@ -48,6 +48,7 @@ STATIC_FILES = {
     "styles.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "access.js": "text/javascript; charset=utf-8",  # 접근 제어 (독립 모듈)
+    "sso.js": "text/javascript; charset=utf-8",     # SSO 로그인 클라이언트 (독립 모듈)
     "denied.html": "text/html; charset=utf-8",      # 허가되지 않은 사용자 안내 페이지
     "sheet.html": "text/html; charset=utf-8",
 }
@@ -545,6 +546,8 @@ def chat_cfg_with_options(body, cfg):
 ACCESS_OPEN_PATHS = {
     "/denied.html", "/access.js", "/styles.css", "/favicon.ico",
     "/api/access/check", "/api/access/temp", "/api/access/logout", "/api/whoami", "/api/health",
+    # SSO는 차단 화면에서 수행된다 — 막아 두면 로그인 자체가 불가능해진다
+    "/api/sso/config", "/api/sso/verify", "/api/sso/health", "/sso.js",
 }
 
 
@@ -554,7 +557,7 @@ def access_decision(handler):
         if not access.enabled():
             return None  # 제어 꺼짐
         try:
-            who = sso.whoami(handler.headers)
+            who = sso.identity_from(handler.headers) or sso.whoami(handler.headers)
         except Exception:
             who = {}
         tok = access.token_from(handler.headers)
@@ -943,6 +946,9 @@ class Handler(BaseHTTPRequestHandler):
                 uid = (self.headers.get("X-SSO-User") or "").strip()
                 if uid:
                     return self._json({"id": uid, "source": "header", "service": "up"})
+                known = sso.identity_from(self.headers)   # 이미 확인된 신원이 있으면 다시 묻지 않는다
+                if known:
+                    return self._json(known)
                 try:
                     return self._json(sso.whoami(self.headers))
                 except Exception as e:  # sso 모듈 문제로 화면이 막히지 않게 한다
@@ -951,7 +957,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/access/check":
                 # 접근 판단. access.py는 sso를 모르므로 서버가 사용자 정보를 넘겨준다.
                 try:
-                    who = sso.whoami(self.headers)
+                    who = sso.identity_from(self.headers) or sso.whoami(self.headers)
                 except Exception:
                     who = {"id": "guest", "source": "none", "service": "down"}
                 tok = access.token_from(self.headers)
@@ -961,7 +967,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(out)
             if path == "/api/access/rules":
                 try:
-                    who = sso.whoami(self.headers)
+                    who = sso.identity_from(self.headers) or sso.whoami(self.headers)
                 except Exception:
                     who = {}
                 if not access.can_admin({"id": who.get("id")}, access.token_from(self.headers)):
@@ -1180,7 +1186,7 @@ class Handler(BaseHTTPRequestHandler):
                                   extra_headers=[("Set-Cookie", access.cookie_header(""))])
             if path == "/api/access/rules":
                 try:
-                    who = sso.whoami(self.headers)
+                    who = sso.identity_from(self.headers) or sso.whoami(self.headers)
                 except Exception:
                     who = {}
                 if not access.can_admin({"id": who.get("id")}, access.token_from(self.headers)):
@@ -1197,10 +1203,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(vals, dict):
                     vals = {"token": body.get("token")} if body.get("token") else {}
                 try:
-                    return self._json(sso.whoami(self.headers, vals))
+                    out = sso.whoami(self.headers, vals)
                 except Exception as e:
                     return self._json({"id": "guest", "source": "none", "service": "down",
                                        "error": "%s: %s" % (type(e).__name__, e)})
+                # 확인된 신원을 서명해 쿠키로 심는다. 1단계는 브라우저만 할 수 있어서
+                # 서버가 페이지 요청마다 다시 확인할 방법이 없다.
+                return self._json(out, extra_headers=[("Set-Cookie", sso.identity_cookie(out))])
             if path == "/api/jobs":
                 return self._create_job()
             if path == "/api/cancel":

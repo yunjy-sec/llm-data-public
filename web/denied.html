@@ -5,7 +5,7 @@
 <!-- interactive-widget=resizes-content: 키보드가 올라와도 레이아웃 뷰포트가 함께 줄어
      입력칸이 가려지거나 화면이 튀지 않는다 (앱 화면과 같은 설정) -->
 <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
-<title>허가되지 않은 사용자입니다</title>
+<title>로그인</title>
 <style>
 /* 이 페이지는 자체 완결이다 — styles.css나 app.js에 기대지 않는다 */
 :root { --bg:#f6f7f9; --fg:#1c2128; --muted:#667085; --card:#fff; --line:#d9dee5;
@@ -39,9 +39,11 @@ button:disabled { opacity:.6; cursor:default; }
 </style>
 </head>
 <body>
-<div class="box">
-  <h1>허가되지 않은 사용자입니다</h1>
-  <p class="who" id="who">로그인 정보를 확인하는 중…</p>
+<!-- SSO로 들어오는 사람은 이 화면을 보지 않는다. 확인이 끝날 때까지 아무것도 그리지 않고,
+     통과하면 곧바로 앱으로 넘어간다. 막힌 경우에만 아래 내용이 나타난다. -->
+<div class="box" id="box" hidden>
+  <h1 id="title">허가되지 않은 사용자입니다</h1>
+  <p class="who" id="who"></p>
   <p class="hint">관리자에게 허가를 요청하거나, 임시 id와 pw로 접속하세요.</p>
   <form id="f" autocomplete="off">
     <input id="tid" type="text" placeholder="임시 id" autocomplete="off">
@@ -51,6 +53,7 @@ button:disabled { opacity:.6; cursor:default; }
   <p class="err" id="err" hidden></p>
   <p class="meta" id="meta"></p>
 </div>
+<script src="sso.js"></script>
 <script>
 (function () {
   "use strict";
@@ -78,29 +81,29 @@ button:disabled { opacity:.6; cursor:default; }
       });
   }
 
-  // 이미 허가된 상태로 이 주소에 들어왔다면 되돌려보낸다.
-  // 단, 서버가 이 페이지를 내려준 것이면(=서버는 차단으로 판단) 다시 이동하지 않는다.
-  // 서버와 화면의 판단이 엇갈리면 무한 새로고침이 된다.
-  var servedHere = !/(^|\/)denied\.html$/.test(location.pathname);
-  api("api/access/check").then(function (info) {
-    if (info && info.allowed && !servedHere) { location.replace(HOME); return; }
-    if (info && info.allowed && servedHere) {
-      // 서버는 막았는데 화면은 통과 — 통행증이 쿠키로 전달되지 않은 상태다
-      document.getElementById("who").textContent = "다시 접속해 주세요";
-      document.getElementById("meta").textContent =
-        "통행증이 이 브라우저에 저장되지 않았습니다 (쿠키 차단 여부를 확인하세요)";
-      return;
-    }
+  function show(info) {
     var u = (info && info.user) || {};
     document.getElementById("who").innerHTML =
       (u.id && u.id !== "guest")
         ? esc(u.id) + (u.name ? " " + esc(u.name) : "") + (u.dept ? " " + esc(u.dept) : "")
         : "로그인 정보를 확인하지 못했습니다";
     document.getElementById("meta").textContent = (info && info.reason) || "";
-  }).catch(function (e) {
-    console.log("[access] 확인 실패", String(e));
-    document.getElementById("who").textContent = "로그인 정보를 확인하지 못했습니다";
-  });
+    document.getElementById("box").hidden = false;
+  }
+
+  // SSO를 먼저 조용히 시도한다. 통과하면 이 화면을 보지 않고 그대로 앱으로 넘어간다.
+  // 서버는 확인된 신원을 쿠키로 심어 두므로 다음 요청부터 페이지 이동에도 실린다.
+  (window.ssoClient ? window.ssoClient.signIn() : Promise.resolve(null))
+    .catch(function () { return null; })
+    .then(function () { return api("api/access/check"); })
+    .then(function (info) {
+      if (info && info.allowed) { location.replace(HOME); return; }
+      show(info);
+    })
+    .catch(function (e) {
+      console.log("[access] 확인 실패", String(e));
+      show(null);
+    });
 
   // 포커스 시 입력칸이 키보드에 가리면 그때만 한 번 스크롤한다 (반복 방지)
   ["tid", "tpw"].forEach(function (id) {
