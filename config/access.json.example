@@ -1,33 +1,25 @@
 {
   "allow": {
-    "id": [
-      "your.loginid"
-    ],
+    "id": ["your.login.id"],
     "dept": []
   },
   "admin": {
-    "id": [
-      "your.loginid"
-    ]
+    "id": ["your.login.id"]
   },
   "temp": [
-    {
-      "id": "temp",
-      "pw": "바꿔서 쓰세요",
-      "note": "임시 접속"
-    }
+    { "id": "admin-temp", "pw": "CHANGE_ME_LONG_RANDOM", "note": "관리자 임시 접속" },
+    { "id": "guest-temp", "pw": "CHANGE_ME_LONG_RANDOM", "note": "일반 임시 접속" }
   ],
   "etc": {
     "설명": "접근 제어. 이 파일이 없거나 allow가 비어 있으면 아무도 막지 않는다(fail-open).",
     "allow.id": "허용할 로그인 id (SSO의 EP_LOGINID) 목록.",
     "allow.dept": "허용할 부서 목록. 부서 이름이 이 값을 포함하면 허용한다(부분 일치).",
-    "admin.id": "허가 목록을 편집할 수 있는 id 목록. 이 사람에게만 관리 화면이 보인다. SSO 로그인 id와 임시 접속 id를 모두 적을 수 있다 — 여기 적힌 id로 들어온 사람만 관리자이고, 나머지 임시 접속 id는 일반 사용자다.",
+    "admin.id": "허가 목록을 편집할 수 있는 id 목록. 이 사람에게만 관리 화면이 보인다. SSO 로그인 id와 임시 접속 id를 모두 적을 수 있다.",
     "temp": "SSO가 막혔을 때 쓰는 임시 접속 자격. 통행증처럼 동작할 뿐이라 화면의 사용자 표시는 SSO 결과 그대로 둔다.",
     "session_hours": 12,
     "session_hours 설명": "임시 접속 토큰 유효시간.",
     "secret": "",
     "secret 설명": "토큰 서명 키. 비워두면 첫 사용 때 자동으로 만들어 이 파일에 채운다.",
-    "독립성": "access.py는 sso도 llm도 import하지 않는다. user={id, dept}를 받아 들여보낼지만 판단하므로 다른 서비스에 그대로 떼어 쓸 수 있다.",
-    "자리표시자": "allow.id, admin.id, temp의 값은 예시다. 쓰는 환경의 실제 값으로 바꾼다."
+    "독립성": "access.py는 sso도 llm도 import하지 않는다. user={id, dept}를 받아 들여보낼지만 판단하므로 다른 서비스에 그대로 떼어 쓸 수 있다."
   }
 }

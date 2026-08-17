@@ -571,8 +571,39 @@ def caller_ip(handler):
         return "?"
 
 
+def header_identity(headers):
+    """신뢰된 상위 프록시가 넘겨 준 사용자. 직접 외부 노출 시 이 헤더들은 신뢰하면 안 된다."""
+    for name, source in (("X-SSO-User", "header"), ("X-Global-User", "global")):
+        try:
+            uid = (headers.get(name) or "").strip()
+        except AttributeError:
+            uid = ""
+        if uid:
+            return {"id": uid, "source": source, "service": "up"}
+    return None
+
+
+def request_identity(handler, probe=True):
+    """요청 신원. proxy header > 서명 쿠키 > SSO/host 조회 순서로 본다."""
+    who = header_identity(handler.headers)
+    if who:
+        return who
+    try:
+        who = sso.identity_from(handler.headers)
+    except Exception:
+        who = None
+    if who:
+        return who
+    if not probe:
+        return {}
+    return sso.whoami(handler.headers)
+
+
 def caller_who(handler):
-    """누가 부른 요청인지 한 줄로. SSO 신원 > 임시 통행증 > guest 순으로 표시한다."""
+    """누가 부른 요청인지 한 줄로. proxy/SSO 신원 > 임시 통행증 > guest 순으로 표시한다."""
+    who = header_identity(handler.headers)
+    if who and who.get("id"):
+        return who["id"]
     try:
         who = sso.identity_from(handler.headers)
     except Exception:
@@ -588,8 +619,7 @@ def caller_who(handler):
         tid = None
     if tid:
         return "임시:%s" % tid
-    hdr = (handler.headers.get("X-SSO-User") or "").strip()
-    return hdr if hdr else "guest"
+    return "guest"
 
 
 def caller(handler):
@@ -634,15 +664,19 @@ def ui_config():
 def chat_owner(handler):
     """이 요청이 보고 만드는 대화의 주인.
 
-    SSO로 신원이 확인되면 그 id가 주인이고, 그 사람만 자기 대화를 본다.
+    신원이 확인되면 그 id가 주인이고, 그 사람만 자기 대화를 본다. 신원을 보는 순서는
+    caller_who·chat_admin과 같아야 한다 — 상위 프록시가 넘긴 사용자가 관리자로는 인정되는데
+    자기 대화는 공용 풀에 쌓이는 어긋남이 생기지 않도록.
     SSO가 없더라도 관리자로 지정된 임시 계정(access.json의 admin.id)은 자기 공간을 갖는다.
     그 밖 — 신원이 없거나 guest·temp 같은 일반 임시 계정 — 은 모두 빈 문자열이 되어
     주인 없는 공용 대화를 다 같이 보고 나눠 쓴다.
     """
-    try:
-        who = sso.identity_from(handler.headers)
-    except Exception:
-        who = None
+    who = header_identity(handler.headers)
+    if not who:
+        try:
+            who = sso.identity_from(handler.headers)
+        except Exception:
+            who = None
     uid = str((who or {}).get("id") or "").strip()
     if uid:
         return uid.lower()
@@ -669,10 +703,12 @@ def admin_ids(who):
 
 def chat_admin(handler):
     """관리자는 주인과 상관없이 모든 대화를 본다 (access.json의 admin.id)."""
-    try:
-        who = sso.identity_from(handler.headers) or {}
-    except Exception:
-        who = {}
+    who = header_identity(handler.headers)
+    if not who:
+        try:
+            who = sso.identity_from(handler.headers) or {}
+        except Exception:
+            who = {}
     try:
         tok = access.token_from(handler.headers)
         if access.can_admin({}, tok):
@@ -709,7 +745,7 @@ def access_decision(handler):
         if not access.enabled():
             return None  # 제어 꺼짐
         try:
-            who = sso.identity_from(handler.headers) or sso.whoami(handler.headers)
+            who = request_identity(handler)
         except Exception:
             who = {}
         tok = access.token_from(handler.headers)
@@ -1104,6 +1140,14 @@ class Handler(BaseHTTPRequestHandler):
                          {"name": "LLM 설정 (token 포함 가능)", "path": llm.CONFIG_PATH,
                           "note": ("LLM_DATA_CONFIG 지정됨" if os.environ.get("LLM_DATA_CONFIG")
                                    else ("PERSIST 영역" if PERSIST_ENV
+                                         else "env 미설정 — 코드 영역 config/ (git 추적 제외)"))},
+                         {"name": "SSO 설정 (자격 정보 포함 가능)", "path": sso.CONFIG_PATH,
+                          "note": ("LLM_DATA_SSO_CONFIG 지정됨" if os.environ.get("LLM_DATA_SSO_CONFIG")
+                                   else ("PERSIST 영역" if PERSIST_ENV
+                                         else "env 미설정 — 코드 영역 config/ (git 추적 제외)"))},
+                         {"name": "접근 제어 설정 (임시 pw·서명 키 포함 가능)", "path": access.CONFIG_PATH,
+                          "note": ("LLM_DATA_ACCESS_CONFIG 지정됨" if os.environ.get("LLM_DATA_ACCESS_CONFIG")
+                                   else ("PERSIST 영역" if PERSIST_ENV
                                          else "env 미설정 — 코드 영역 config/ (git 추적 제외)"))}]},
                     {"key": "runtime",
                      "label": "RUNTIME — 유실 허용 (재기동 시 사라져도 되는 작업 이력)",
@@ -1120,10 +1164,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"examples": load_examples()})
             if path == "/api/whoami":
                 # 로그인 id. SSO 조회는 sso.py가 전담하며 실패해도 guest로만 떨어진다.
-                # 프록시가 헤더로 직접 넣어 주는 환경(X-SSO-User)이 우선이다.
-                uid = (self.headers.get("X-SSO-User") or "").strip()
-                if uid:
-                    return self._json({"id": uid, "source": "header", "service": "up"})
+                # 프록시가 헤더로 직접 넣어 주는 환경(X-SSO-User, X-Global-User)이 우선이다.
+                known = header_identity(self.headers)
+                if known:
+                    return self._json(known)
                 known = sso.identity_from(self.headers)   # 이미 확인된 신원이 있으면 다시 묻지 않는다
                 if known:
                     return self._json(known)
@@ -1146,7 +1190,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/access/check":
                 # 접근 판단. access.py는 sso를 모르므로 서버가 사용자 정보를 넘겨준다.
                 try:
-                    who = sso.identity_from(self.headers) or sso.whoami(self.headers)
+                    who = request_identity(self)
                 except Exception:
                     who = {"id": "guest", "source": "none", "service": "down"}
                 tok = access.token_from(self.headers)
@@ -1156,7 +1200,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(out)
             if path == "/api/access/rules":
                 try:
-                    who = sso.identity_from(self.headers) or sso.whoami(self.headers)
+                    who = request_identity(self)
                 except Exception:
                     who = {}
                 if not access.can_admin({"id": who.get("id")}, access.token_from(self.headers)):
@@ -1387,7 +1431,7 @@ class Handler(BaseHTTPRequestHandler):
                                   extra_headers=[("Set-Cookie", access.cookie_header(""))])
             if path == "/api/access/rules":
                 try:
-                    who = sso.identity_from(self.headers) or sso.whoami(self.headers)
+                    who = request_identity(self)
                 except Exception:
                     who = {}
                 if not access.can_admin({"id": who.get("id")}, access.token_from(self.headers)):

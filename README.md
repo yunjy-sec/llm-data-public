@@ -4,8 +4,11 @@ Excel·JSON·HTML 등 어디서 복사했는지 모르는 임의 형식의 표 �
 레코드 배열로 정규화하는 서비스입니다. 열 이름이 한글·영어·공백·숫자·특수기호가 섞여 있어 규칙 기반
 매핑이 불가능한 데이터를 LLM의 의미 기반 매핑으로 변환합니다.
 
-- 주소: `http://127.0.0.1:8821` (프록시 뒤에 둘 때는 stripPrefix 방식)
-- 실행: `python server.py --host 127.0.0.1 --port 8821` (stdlib only, 의존성 없음)
+- 주소: `http://127.0.0.1:8821`
+  - `_global`에 등록해 두면 밖에서는 `https://llm-data.tradechord.com:8443/` (호스트 프록시)
+  - 옛 경로 프록시 `…:9999/apps/llm-data/`도 그대로 동작한다 (`stripPrefix: true`)
+- 실행: `python run_server.py` (stdlib only, 의존성 없음 — 기본 `127.0.0.1:8821`)
+  다른 호스트에서 직접 붙어야 할 때만 `--host 0.0.0.0` 또는 `server.json`의 `host`로 연다
 - LLM: OpenAI 호환 endpoint를 `config/llm.json`의 `base_url`(기본 `http://127.0.0.1:8820`)로 지정.
   다른 게이트웨이에 붙이는 방법은 [INTEGRATION.md](INTEGRATION.md), 배포·저장 경로는 [DEPLOY.md](DEPLOY.md) 참고
 
@@ -13,13 +16,21 @@ Excel·JSON·HTML 등 어디서 복사했는지 모르는 임의 형식의 표 �
 
 | 경로 | 역할 |
 |---|---|
+| `run_server.py` | 실행 진입점. host·port·저장 경로를 `config/server.json`·환경변수에서 찾아 서버를 띄운다 |
 | `server.py` | stdlib HTTP 서버 · 잡 큐(데몬 스레드) · `data/jobs/JOB-*.json` 상태 저장 |
 | `llm.py` | LLM 게이트웨이: 설정/토큰 주입, blocking 호출, lenient JSON 파싱, 오류 분류 |
+| `sso.py` | 로그인 id 조회. 환경에 따라 창구가 갈린다 (Windows는 KnoxTray, 폐쇄망은 셸 계정) |
+| `access.py` | 접근 제어. sso도 llm도 import하지 않아 그대로 떼어 쓸 수 있다 |
+| `rates.py` | 모델별 요청·토큰 rate 집계 (sliding window). 다른 모듈을 import하지 않는다 |
+| `log.py` | 로그 한 줄 형식 (timestamp · 태그 · 호출자) |
 | `prompts/table_to_schema.md` | 변환 시스템 프롬프트 (`{{TARGET_SCHEMA}}` 치환) |
-| `examples/` | 기본 목표 스키마(ESD 한계평가·인사명부)와 예시 입력 3종 |
+| `examples/` | 기본 목표 스키마(ESD 한계평가)와 예시 입력 3종 |
 | `web/` | 프론트엔드 (상대경로 fetch + 폴링 실시간 동기화) |
 | `web/vendor/luckysheet/` | 자체 호스팅 Luckysheet 2.1.13 (records 표 하단 Excel 뷰, CDN 미사용) |
-| `config/llm.json` | LLM 연결 설정. 토큰은 `headers` 또는 `api_key_env`로 주입 |
+| `config/llm.json` | LLM 연결 설정. 모델마다 `url·header·body·rate·etc` 한 벌. 토큰은 `header` 또는 `api_key_env`로 주입 |
+| `config/sso.json` | 로그인 id 조회 설정 (`local`·`verify`·`host`) |
+| `config/access.json` | 허용 목록·관리자·임시 접속 자격 |
+| `config/server.json` | 실행 설정(host·port·저장 경로)과 화면 렌더 옵션 `ui` |
 
 ## 백엔드 LLM 통신
 
@@ -60,7 +71,8 @@ headers/api_key_env/timeout 등)와 시스템 프롬프트를 조회·편집·�
 |---|---|
 | `GET /api/health` | `{"app":"llm-data","ok":true,...}` — _global 헬스체크 marker |
 | `GET /api/llm/health` | 업스트림 llm-api 상태 요약 |
-| `GET /api/rates` | 모델별 요청·토큰 rate(서버 전체, 분당). 창 길이·주기·색 범위는 `config/server.json`의 `rate` |
+| `GET /api/rates` | 모델별 요청·토큰 rate(서버 전체, 분당). 창 길이·주기·색 범위는 `config/llm.json`의 모델 프로필 안 `rate` |
+| `GET /api/ui` | 화면 렌더 옵션(`config/server.json`의 `ui`) — 화면 밖 렌더 건너뛰기·증분 렌더 |
 | `GET /api/schema` · `/api/examples` · `/api/models` · `/api/prompt` | 기본 스키마·예시·모델·프롬프트 |
 | `POST /api/jobs` | `{input_text, schema?, model?}` → 202 `{job_id, queue_position}` |
 | `GET /api/jobs?limit=N` · `GET /api/job?id=` | 이력 요약(steps 포함) · 잡 문서(steps·request·response·결과 포함) |
@@ -168,8 +180,9 @@ dry_run 검토 → 적용). 추가 필드 = 전 행 null 채움, 데이터 있�
 숫자는 숫자 문자열("1000"), 인가 스트레스 리스트는 `→` 구분 문자열("500→1000→1500"), 행 id도
 문자열, 극성은 `pos`/`neg` 코드를 사용합니다.
 
-화면 최상단에 **로그인 id**(👤)를 표시합니다. 현재는 항상 `guest`이며, `GET /api/whoami`가
-`X-SSO-User` 헤더를 읽도록 되어 있어 추후 SSO 연동 시 그 값이 표시·저장 파일명에 사용됩니다.
+화면 최상단에 **로그인 id**를 표시합니다. `GET /api/whoami`는 신뢰된 프록시의
+`X-SSO-User` 또는 `_global`의 `X-Global-User`를 우선하고, 없으면 SSO/host 설정을 통해 확인합니다.
+확인된 id는 대화 소유자와 데이터셋 편집 로그에 사용됩니다. 신원을 얻지 못하면 `guest`로 떨어집니다.
 
 기본 예시는 ESD(HBM/CDM) 한계평가 결과표입니다: 원자 단위 (die, pkg_type, test_type, polarity)당
 1 레코드, 인가 스트레스 리스트(kV·V 혼용 → V 환산), 스펙 PASS면 만족 최소 전압 / FAIL이면 불만족 최대

@@ -13,8 +13,10 @@
 python run_server.py
 ```
 
-기본은 `0.0.0.0:8821`이라 다른 PC의 브라우저에서도 접속된다. 프론트엔드는 별도 빌드가 없다 —
-서버가 `web/`을 그대로 서빙하므로 파일을 고치고 새로고침하면 끝이다.
+기본은 `127.0.0.1:8821`이다. 밖에서 붙는 경로는 `_global`의 호스트 프록시
+(`https://llm-data.tradechord.com:8443/`)이므로 서버 자체는 loopback만 열어 두면 된다.
+프록시 없이 다른 PC에서 직접 붙어야 하면 `--host 0.0.0.0`으로 연다.
+프론트엔드는 별도 빌드가 없다 — 서버가 `web/`을 그대로 서빙하므로 파일을 고치고 새로고침하면 끝이다.
 
 값은 하드코딩하지 않는다. **명령행 인자 > 환경변수 > `config/server.json` > 기본값** 순으로 찾는다.
 
@@ -22,12 +24,17 @@ python run_server.py
 |---|---|---|
 | 그냥 실행 | `python run_server.py` | `config/server.json`이 있으면 그 값으로 |
 | 포트만 바꿔서 | `python run_server.py --port 9000` | 인자가 가장 우선 |
-| 내 PC에서만 | `python run_server.py --host 127.0.0.1` | 또는 `server.json`의 `host` |
+| 다른 PC에서도 직접 | `python run_server.py --host 0.0.0.0` | 또는 `server.json`의 `host` |
 | 컨테이너 | `docker compose up -d --build` | PERSIST 볼륨 마운트 — `DEPLOY.md` |
 
 `config/server.json`에 `persist`·`runtime`·`config`·`sso_config`·`access_config`를 적으면
 `run_server.py`가 환경변수로 넣어 준 뒤 서버를 띄운다. 예시는 `config/server.json.example`에 있다.
 `python server.py --host ... --port ...`로 직접 띄우는 방식도 그대로 동작한다.
+
+`_global` 서비스 YAML은 `target: http://127.0.0.1:8821`과
+`publicHost: llm-data.tradechord.com` 조합을 쓴다. host proxy는 경로를 바꾸지 않고,
+legacy path proxy(`/apps/llm-data/`)는 `stripPrefix: true`로 동작한다. `_global` 로그인 사용자는
+`X-Global-User` 헤더로 앱에 전달된다.
 
 첫 기동 후 **0번 설정 탭**에서 `base_url`을 LLM 서버 위치로 맞추면 바로 변환·대화가 동작한다.
 상단 상태 표시줄의 LLM 상태가 "연결됨"으로 바뀌는지로 확인한다.
@@ -52,7 +59,7 @@ python run_server.py
 | 설정 | `config/llm.json.example` | 설정 키 예시 — 복사해 `llm.json`으로 쓴다 (실제 파일은 커밋 금지) |
 | 설정 | `config/sso.json.example` | 로그인 id 조회 설정 예시 — 복사해 `sso.json`으로 쓴다 (선택) |
 | 설정 | `config/access.json.example` | 접근 제어 설정 예시 — 복사해 `access.json`으로 쓴다 (선택) |
-| 설정 | `config/server.json.example` | 실행 설정 예시 (host port 저장 경로, `rate` 블록) — 복사해 `server.json`으로 쓴다 (선택) |
+| 설정 | `config/server.json.example` | 실행 설정 예시 (host port 저장 경로, 화면 렌더 옵션 `ui`) — 복사해 `server.json`으로 쓴다 (선택) |
 | 프롬프트 | `prompts/table_to_schema.md` | 변환 시스템 프롬프트. `{{TARGET_SCHEMA}}` 자리에 목표 스키마가 치환된다 |
 
 ## 경로 설정 방법
@@ -76,27 +83,29 @@ python run_server.py
 | `LLM_DATA_CONFIG` | 설정 파일 경로를 개별 지정할 때 (PERSIST보다 우선) | `/etc/llm-data/llm.json` |
 | `LLM_DATA_SSO_CONFIG` | SSO 설정 파일 경로를 개별 지정할 때 | `/etc/llm-data/sso.json` |
 | `LLM_DATA_ACCESS_CONFIG` | 접근 제어 설정 파일 경로를 개별 지정할 때 | `/etc/llm-data/access.json` |
+| `LLM_DATA_SERVER_CONFIG` | 실행·화면 설정 파일 경로를 개별 지정할 때 | `/etc/llm-data/server.json` |
 
 ```bash
-LLM_DATA_PERSIST=/srv/llm-data/data LLM_DATA_RUNTIME=/var/tmp/llm-data python server.py --host 0.0.0.0 --port 8821
+LLM_DATA_PERSIST=/srv/llm-data/data LLM_DATA_RUNTIME=/var/tmp/llm-data python run_server.py
 ```
 
 > **운영·CI/CD 환경에서는 `LLM_DATA_PERSIST`·`LLM_DATA_RUNTIME` 지정이 필수다.** 미지정 시 데이터가
 > 코드 디렉터리 아래(`<repo>/data`)에 쌓여, 릴리스 디렉터리를 교체하는 배포나 앱 디렉터리를 read-only로
 > 두는 환경에서 유실·저장 실패로 이어진다. env 미설정은 로컬 개발 전용이다.
 
-env 미설정 시 실제 경로는 PERSIST 대상 전부가 `<repo>/data` 아래이고, **LLM 설정만 `<repo>/config/llm.json`**
-이다(git 추적 제외). 사용자 프롬프트 저장본은 항상 PERSIST 아래에 기록되므로 코드의 기본 프롬프트 파일을
-덮어쓰지 않는다.
+env 미설정 시 실제 경로는 PERSIST 대상 전부가 `<repo>/data` 아래이고, 설정 파일은
+`<repo>/config/{llm,sso,access}.json`이다(git 추적 제외). `LLM_DATA_PERSIST`를 지정하면
+`<persist>/config/{llm,sso,access}.json`만 읽고 코드 디렉터리의 로컬 설정으로 fallback하지 않는다.
+사용자 프롬프트 저장본은 항상 PERSIST 아래에 기록되므로 코드의 기본 프롬프트 파일을 덮어쓰지 않는다.
 
 현재 인스턴스에 실제로 적용된 경로는 헤더 **⚙ 버튼**(저장 영역) 또는 `GET /api/storage`로 확인한다 —
 각 영역의 root와 env 적용 여부가 표시되고, env가 빠져 있으면 경고가 함께 표시된다.
 영역 구분의 배경은 `DEPLOY.md`에 있다.
 
-## 설정 구조 — 모델마다 `url` · `header` · `body` · `etc` 한 벌
+## 설정 구조 — 모델마다 `url` · `header` · `body` · `rate` · `etc` 한 벌
 
 특별한 환경(게이트웨이)용 설정은 **모델마다 온전한 구조를 하나씩** 갖는다.
-최상위 키 이름이 곧 모델 이름이고, 그 안에 그 모델의 `url`·`header`·`body`·`etc`가 들어간다.
+최상위 키 이름이 곧 모델 이름이고, 그 안에 그 모델의 `url`·`header`·`body`·`rate`·`etc`가 들어간다.
 모델 목록은 이 최상위 키들에서 잡히므로 `models` 같은 별도 키를 적지 않는다.
 
 요청을 결정하는 것은 **`url`·`header`·`body` 3개**다. 여기 적은 것이 그대로 나간다.
@@ -107,6 +116,7 @@ env 미설정 시 실제 경로는 PERSIST 대상 전부가 `<repo>/data` 아래
 | `url` | 이 모델의 전체 endpoint |
 | `header` | 실제 요청 헤더. 이름·값 모두 적은 그대로 전송(대소문자 보존), 값은 문자열 |
 | `body` | 요청 본문 항목. `model`도 여기 둔다 |
+| `rate` | 대화 화면에 뜨는 요청·토큰 rate의 창 길이·주기·색 범위. 전송되지 않는다. 창은 모델마다 달라야 해서 여기 둔다 — 빠른 모델과 오래 걸리는 모델을 같은 창으로 재면 한쪽은 늘 0에 가깝다 |
 | `etc` | 설명 등 자유 기재. 전송되지 않는다. `timeout`·`probe_timeout`·`response_schema`를 넣으면 그 모델에 그 값으로 동작한다 |
 
 **header** — `Content-Type`, `Accept`, `x-dep-ticket`, `Send-System-Name`, `User-Type`, `User-Id`가
@@ -305,7 +315,8 @@ API 게이트웨이를 거쳐야 하는 시스템(자격 티켓·시스템 식�
 - **`ws://localhost`는 그대로 둔다.** 사용자 PC의 에이전트라서 브라우저가 붙어야 한다.
   8000 포트만 실제 호스트 주소로 바꾼다.
 - `verify.url` — 적은 호스트로 그대로 나간다. 경로를 빼고 호스트만 적으면 `/api/verify_sso`를 붙인다.
-- 프록시가 헤더로 직접 넣어 주는 환경이면 `X-SSO-User`가 우선한다 (SSO 조회 없이 그 값을 쓴다).
+- 프록시가 헤더로 직접 넣어 주는 환경이면 `X-SSO-User`와 `_global`의 `X-Global-User`가 우선한다
+  (SSO 조회 없이 그 값을 쓴다). 이 헤더들은 신뢰된 loopback/내부 프록시 뒤에서만 사용한다.
 
 화면 표시 (id 왼쪽 LED)
 

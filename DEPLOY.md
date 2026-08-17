@@ -8,8 +8,8 @@
 
 | 영역 | 위치 | env | 내용 | 재기동 시 |
 |---|---|---|---|---|
-| LOGIC | 코드 디렉터리 (컨테이너면 `/app`) | — | server.py · llm.py · web/ · prompts/(기본본) · examples/ | 유실 무관 (배포물에 포함) |
-| PERSIST | `/data` | `LLM_DATA_PERSIST` | dataset.json · exports/(Save As 스냅샷) · dataset-log.jsonl · chats/ · projects.json · masters/ · prompts/table_to_schema.md(사용자 저장본) · config/llm.json(사용자 설정·token) | **반드시 유지 — 영구 저장소 필수** |
+| LOGIC | 코드 디렉터리 | — | server.py · llm.py · web/ · prompts/(기본본) · examples/ · config/*.json.example | 유실 무관 (배포물에 포함) |
+| PERSIST | `/data` | `LLM_DATA_PERSIST` | dataset.json · exports/(Save As 스냅샷) · dataset-log.jsonl · chats/ · projects.json · masters/ · prompts/table_to_schema.md(사용자 저장본) · config/llm.json(사용자 설정·token) · config/sso.json(SSO 자격) · config/access.json(허용 목록·임시 pw·서명 키) | **반드시 유지 — 영구 저장소 필수** |
 | RUNTIME | `/runtime` | `LLM_DATA_RUNTIME` | jobs/ (변환 작업 이력·중간 산출물) | 유실 허용 |
 
 > **운영·CI/CD 환경에서는 `LLM_DATA_PERSIST`와 `LLM_DATA_RUNTIME` 지정이 필수다.**
@@ -18,10 +18,12 @@
 > 이어진다. env 미설정은 로컬 개발 전용으로만 쓴다.
 
 - env 미설정 시 경로: PERSIST 대상은 모두 `<repo>/data` 아래(dataset·exports·chats·projects·masters·
-  prompts·dataset-log), 단 **LLM 설정만 `<repo>/config/llm.json`** — 이 파일은 git 추적에서 제외되어 있다.
-  `LLM_DATA_CONFIG`로 개별 지정할 수 있고, `LLM_DATA_PERSIST`를 주면 `<persist>/config/llm.json`을 쓴다.
-- 사용자 편집 대상인 `config/llm.json`(LLM 연결·token)과 변환 프롬프트는 **기본본(LOGIC) + 사용자 저장본(PERSIST)**
-  2단 구조다: 읽기는 사용자 저장본 우선, 저장은 항상 PERSIST에 기록된다. 저장이 코드 영역의 추적 파일을
+  prompts·dataset-log), 설정 파일은 `<repo>/config/{llm,sso,access}.json`이다. 이 실제 설정 파일들은
+  git 추적에서 제외되어 있고, 예시 파일(`*.example`)만 커밋한다.
+- `LLM_DATA_PERSIST`를 주면 실제 설정 파일은 `<persist>/config/{llm,sso,access}.json`을 쓴다.
+  이 상태에서는 코드 디렉터리의 로컬 설정으로 fallback하지 않는다.
+- 사용자 편집 대상인 `config/llm.json`(LLM 연결·token)과 변환 프롬프트는 기본본(LOGIC)과
+  사용자 저장본(PERSIST)을 나눠 둔다. 저장은 항상 PERSIST에 기록되어 코드 영역의 추적 파일을
   덮어쓰지 않으며, token이 배포물에 들어가지 않는다.
 - 현재 인스턴스에 실제로 적용된 경로와 env 적용 여부는 화면 헤더 **⚙** 또는 `GET /api/storage`로 확인한다.
   env가 빠져 있으면 같은 응답의 `warning`과 화면 경고로 표시된다.
@@ -29,10 +31,12 @@
 ## 프로세스로 직접 배포 (컨테이너 없이)
 
 ```bash
-LLM_DATA_PERSIST=/srv/llm-data/data LLM_DATA_RUNTIME=/var/tmp/llm-data python server.py --host 0.0.0.0 --port 8821
+LLM_DATA_PERSIST=/srv/llm-data/data LLM_DATA_RUNTIME=/var/tmp/llm-data python run_server.py
 ```
 
 - `LLM_DATA_PERSIST`는 릴리스 교체와 무관한 경로(앱 디렉터리 **바깥**)로 지정한다.
+- 기본 bind는 `127.0.0.1`이다. 같은 호스트의 `_global` 뒤에 둘 때 이 값을 유지한다.
+  별도 프록시/호스트에서 직접 붙어야 하는 경우에만 `--host 0.0.0.0` 또는 `LLM_DATA_HOST`를 쓴다.
 - 앱 디렉터리를 read-only로 두어도 동작한다 — 쓰기는 전부 PERSIST·RUNTIME 아래에서만 일어난다.
 - 서비스 계정에 두 경로의 쓰기 권한을 준다. 기동 시 하위 디렉터리는 자동 생성된다.
 
@@ -51,7 +55,10 @@ docker compose up -d --build
 - `/data` → PersistentVolumeClaim 마운트 (ReadWriteOnce면 replica 1 — 서버가 파일 기반 단일 인스턴스 설계).
 - `/runtime` → `emptyDir` 로 충분.
 - liveness/readiness: `GET /api/health` (200 + `"app": "llm-data"`).
-- 프록시 뒤에 둘 때는 stripPrefix 방식이어야 한다 (프론트가 상대경로 fetch 사용).
+- 프록시 뒤에 둘 때: 호스트 프록시(`publicHost: llm-data.tradechord.com`)면 경로를 건드리지
+  않으므로 그대로 동작하고, 경로 프록시(`/apps/llm-data/`)면 `stripPrefix: true`여야 한다
+  (프론트가 상대경로로 fetch하기 때문). 서버는 두 경우 모두 받아들인다 —
+  `/apps/llm-data` 접두어가 붙어 들어와도 벗겨서 처리한다.
 
 ## 점검 endpoint
 

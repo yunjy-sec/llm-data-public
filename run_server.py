@@ -9,7 +9,7 @@
 config/server.json (없으면 만들지 않아도 된다)
 
     {
-      "host": "0.0.0.0",
+      "host": "127.0.0.1",
       "port": 8821,
       "persist": "/srv/llm-data/data",
       "runtime": "/var/tmp/llm-data",
@@ -33,9 +33,8 @@ import log as _log_mod
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.environ.get("LLM_DATA_SERVER_CONFIG") or os.path.join(ROOT, "config", "server.json")
 
-# 기본은 0.0.0.0 — 다른 PC의 브라우저에서 접속해야 하는 서비스다.
-# 내 PC에서만 열려면 config/server.json의 host를 127.0.0.1로 적는다.
-DEFAULT_HOST = "0.0.0.0"
+# 기본은 loopback이다. 다른 호스트에서 직접 붙어야 할 때만 --host 0.0.0.0 또는 server.json으로 연다.
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8821
 
 # config/server.json의 키 -> server.py가 읽는 환경변수

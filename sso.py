@@ -63,9 +63,11 @@ from urllib.parse import urlsplit
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 _PERSIST = os.environ.get("LLM_DATA_PERSIST")
+_CONFIG_ENV = os.environ.get("LLM_DATA_SSO_CONFIG")
 CONFIG_DEFAULT_PATH = os.path.join(ROOT, "config", "sso.json")
-CONFIG_PATH = (os.environ.get("LLM_DATA_SSO_CONFIG")
+CONFIG_PATH = (_CONFIG_ENV
                or (os.path.join(_PERSIST, "config", "sso.json") if _PERSIST else CONFIG_DEFAULT_PATH))
+_CONFIG_READ_PATHS = (CONFIG_PATH,)
 
 MAX_BYTES = 256 * 1024
 GUEST = "guest"
@@ -97,7 +99,7 @@ def _log(msg):
 
 
 def load_config():
-    for p in (CONFIG_PATH, CONFIG_DEFAULT_PATH):
+    for p in _CONFIG_READ_PATHS:
         try:
             with open(p, encoding="utf-8") as f:
                 cfg = json.load(f)
@@ -318,7 +320,7 @@ def _identity_secret(cfg):
         etc = cur.get("etc") if isinstance(cur.get("etc"), dict) else {}
         etc["secret"] = s
         cur["etc"] = etc
-        path = next((p for p in (CONFIG_PATH, CONFIG_DEFAULT_PATH) if os.path.exists(p)), CONFIG_PATH)
+        path = CONFIG_PATH
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

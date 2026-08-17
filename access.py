@@ -44,9 +44,9 @@ CONFIG_DEFAULT_PATH = os.path.join(ROOT, "config", "access.json")
 _ENV_PATH = os.environ.get("LLM_DATA_ACCESS_CONFIG")
 CONFIG_PATH = (_ENV_PATH
                or (os.path.join(_PERSIST, "config", "access.json") if _PERSIST else CONFIG_DEFAULT_PATH))
-# 환경변수로 경로를 못박았으면 그 파일만 본다. 저장소 기본본으로 흘러가면
-# "제어를 껐다고 생각한 곳에서 갑자기 켜지는" 사고가 난다.
-_SEARCH_PATHS = (CONFIG_PATH,) if _ENV_PATH else (CONFIG_PATH, CONFIG_DEFAULT_PATH)
+# 접근 제어 설정은 로컬 자격 정보다. PERSIST/ENV를 지정한 배포에서 코드 디렉터리의
+# config/access.json으로 흘러가면 "제어를 껐다고 생각한 곳에서 갑자기 켜지는" 사고가 난다.
+_SEARCH_PATHS = (CONFIG_PATH,)
 
 DEFAULT_SESSION_HOURS = 12
 # 통행증을 담는 쿠키 이름. 헤더(X-Access-Token)만 쓰면 페이지 이동에는 실리지 않아

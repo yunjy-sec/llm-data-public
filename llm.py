@@ -44,12 +44,14 @@ import uuid
 from urllib.parse import urlsplit
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-# 설정 경로: LLM_DATA_CONFIG > LLM_DATA_PERSIST(volume)/config/llm.json > 이미지 기본본.
-# 배포 시 token이 담기는 파일이므로 persistent volume에 두어야 재기동에도 유지된다.
+# 설정 경로: LLM_DATA_CONFIG > LLM_DATA_PERSIST(volume)/config/llm.json > 로컬 config/llm.json.
+# 배포 시 token이 담기는 파일이므로 PERSIST/ENV를 지정한 뒤에는 코드 영역으로 fallback하지 않는다.
 _PERSIST = os.environ.get("LLM_DATA_PERSIST")
+_CONFIG_ENV = os.environ.get("LLM_DATA_CONFIG")
 CONFIG_DEFAULT_PATH = os.path.join(ROOT, "config", "llm.json")
-CONFIG_PATH = (os.environ.get("LLM_DATA_CONFIG")
+CONFIG_PATH = (_CONFIG_ENV
                or (os.path.join(_PERSIST, "config", "llm.json") if _PERSIST else CONFIG_DEFAULT_PATH))
+_CONFIG_READ_PATHS = (CONFIG_PATH,)
 
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
@@ -73,8 +75,8 @@ class LLMError(Exception):
 
 def load_config():
     cfg = {}
-    # 사용자 저장본(persist) 우선, 없으면 이미지의 기본본 — 첫 기동 bootstrap용
-    for p in (CONFIG_PATH, CONFIG_DEFAULT_PATH):
+    # 사용자 저장본이 없으면 아래 기본값으로 bootstrap한다.
+    for p in _CONFIG_READ_PATHS:
         try:
             with open(p, encoding="utf-8") as f:
                 cfg = json.load(f)
