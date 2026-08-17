@@ -21,6 +21,10 @@ import sso
 import access
 import rates
 
+# rate 창·색 범위는 모델마다 다르다 — llm.json의 모델 프로필 안 rate 블록에서 읽는다.
+# rates 모듈은 설정이 어디 사는지 모르고, 여기서 꽂아 준다.
+rates.set_config_source(lambda model: llm.rate_config(model=model))
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
 
@@ -593,6 +597,112 @@ def caller(handler):
     return "%s %s" % (caller_ip(handler), caller_who(handler))
 
 
+# ---- 화면 렌더 옵션 (config/server.json의 ui) ----
+# 긴 대화의 스크롤을 빠르게 하는 두 가지를 각각 끄고 켤 수 있게 둔다. 둘 다 켜는 것이
+# 기본이지만, 브라우저나 대화 모양에 따라 문제가 보이면 재기동 없이 끌 수 있어야 한다.
+SERVER_CONFIG_PATH = os.environ.get("LLM_DATA_SERVER_CONFIG") or \
+    os.path.join(ROOT, "config", "server.json")
+DEFAULT_UI = {
+    "skip_offscreen_render": True,   # 화면 밖 메시지의 레이아웃·페인트를 건너뛴다
+    "incremental_render": True,      # 새 답변만 그려 넣는다 (대화 전체를 다시 만들지 않는다)
+}
+_UI_CACHE = {"data": None, "mtime": None}
+
+
+def ui_config():
+    """server.json의 ui 블록. 파일이 바뀌면 다시 읽는다(재기동 없이 반영)."""
+    try:
+        mtime = os.path.getmtime(SERVER_CONFIG_PATH)
+    except OSError:
+        mtime = None
+    if _UI_CACHE["data"] is not None and _UI_CACHE["mtime"] == mtime:
+        return _UI_CACHE["data"]
+    raw = {}
+    if mtime is not None:
+        try:
+            with open(SERVER_CONFIG_PATH, encoding="utf-8") as f:
+                doc = json.load(f)
+            if isinstance(doc, dict) and isinstance(doc.get("ui"), dict):
+                raw = doc["ui"]
+        except (OSError, ValueError):
+            raw = {}      # 설정이 깨져도 화면이 안 뜨면 안 된다
+    out = {k: (bool(raw[k]) if k in raw else v) for k, v in DEFAULT_UI.items()}
+    _UI_CACHE["data"], _UI_CACHE["mtime"] = out, mtime
+    return out
+
+
+def chat_owner(handler):
+    """이 요청이 보고 만드는 대화의 주인.
+
+    SSO로 신원이 확인되면 그 id가 주인이고, 그 사람만 자기 대화를 본다.
+    SSO가 없더라도 관리자로 지정된 임시 계정(access.json의 admin.id)은 자기 공간을 갖는다.
+    그 밖 — 신원이 없거나 guest·temp 같은 일반 임시 계정 — 은 모두 빈 문자열이 되어
+    주인 없는 공용 대화를 다 같이 보고 나눠 쓴다.
+    """
+    try:
+        who = sso.identity_from(handler.headers)
+    except Exception:
+        who = None
+    uid = str((who or {}).get("id") or "").strip()
+    if uid:
+        return uid.lower()
+    try:
+        tok = access.token_from(handler.headers)
+        tid = access.check_token(tok)
+        if tid and access.can_admin({}, tok):
+            return str(tid).strip().lower()
+    except Exception:
+        pass          # 판단이 깨지면 공용으로 떨어진다 — 남의 대화가 보이는 쪽으로는 절대 기울지 않는다
+    return ""
+
+
+def admin_ids(who):
+    """관리자 목록과 맞춰볼 이름들. 폐쇄망에서는 로그인 id와 셸 계정이 다를 수 있어
+    (예: EP_LOGINID는 email 앞부분, 셸 계정은 그보다 짧다) 둘 다 본다."""
+    out = []
+    for k in ("id", "account"):
+        v = str((who or {}).get(k) or "").strip()
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
+def chat_admin(handler):
+    """관리자는 주인과 상관없이 모든 대화를 본다 (access.json의 admin.id)."""
+    try:
+        who = sso.identity_from(handler.headers) or {}
+    except Exception:
+        who = {}
+    try:
+        tok = access.token_from(handler.headers)
+        if access.can_admin({}, tok):
+            return True
+        return any(access.can_admin({"id": uid}) for uid in admin_ids(who))
+    except Exception:
+        return False   # 판단이 깨지면 관리자가 아닌 쪽으로 — 남의 대화가 보이는 쪽으로 기울지 않는다
+
+
+def chat_scope(handler):
+    """(내 대화의 주인 키, 관리자인가). 대화를 만지는 모든 경로가 이걸로 판단한다."""
+    return chat_owner(handler), chat_admin(handler)
+
+
+def owner_of(chat):
+    """대화 문서에 적힌 주인. 주인이 없으면 공용이다."""
+    return str((chat or {}).get("owner") or "").strip().lower()
+
+
+def load_chat_for(cid, owner, admin=False):
+    """주인이 같은 대화만 돌려준다(관리자는 전부). 남의 대화는 아예 없는 것처럼 None이다
+    (403이면 그 id의 대화가 있다는 사실 자체가 새어 나간다)."""
+    chat = load_chat(cid)
+    if chat is None:
+        return None
+    if admin:
+        return chat
+    return chat if owner_of(chat) == owner else None
+
+
 def access_decision(handler):
     """이 요청을 들여보낼지. access 설정이 없으면 아무도 막지 않는다(fail-open)."""
     try:
@@ -693,16 +803,20 @@ def apply_branch_switch(chat, idx, to):
     return None
 
 
-def list_chats():
+def list_chats(owner="", admin=False):
+    """그 주인의 대화 목록. 주인이 다르면 목록에 아예 나오지 않는다(관리자는 전부 본다).
+    거르고 나서 50개를 세므로, 남의 대화가 많아도 내 대화가 밀려나지 않는다."""
     with _LOCK:
         try:
             names = sorted((n for n in os.listdir(CHATS_DIR) if n.endswith(".json")), reverse=True)
         except FileNotFoundError:
             return []
         out = []
-        for n in names[:50]:
+        for n in names:
+            if len(out) >= 50:
+                break
             c = load_chat(n[:-5])
-            if c:
+            if c and (admin or owner_of(c) == owner):
                 cum = 0
                 ctx = 0
                 for m in c.get("messages") or []:
@@ -713,7 +827,8 @@ def list_chats():
                 out.append({"id": c["id"], "title": c.get("title") or c["id"],
                             "updated_at": c.get("updated_at"), "count": len(c.get("messages") or []),
                             "cum_tokens": cum, "ctx_tokens": ctx, "model": c.get("model"),
-                            "pinned": bool(c.get("pinned")), "project": c.get("project")})
+                            "pinned": bool(c.get("pinned")), "project": c.get("project"),
+                            "owner": owner_of(c)})
         return out
 
 
@@ -1013,10 +1128,18 @@ class Handler(BaseHTTPRequestHandler):
                 if known:
                     return self._json(known)
                 try:
-                    return self._json(sso.whoami(self.headers))
+                    got = sso.whoami(self.headers)
+                    # 폐쇄망(host)은 브라우저가 할 일이 없어 verify 단계를 거치지 않는다.
+                    # 여기서 신원 쿠키를 심어야 이후 요청이 대화 주인과 관리자를 알아본다.
+                    if got.get("source") in sso.IDENTITY_SOURCES and got.get("id"):
+                        return self._json(got, extra_headers=[
+                            ("Set-Cookie", sso.identity_cookie(got))])
+                    return self._json(got)
                 except Exception as e:  # sso 모듈 문제로 화면이 막히지 않게 한다
                     return self._json({"id": "guest", "source": "none", "service": "down",
                                        "error": "%s: %s" % (type(e).__name__, e)})
+            if path == "/api/ui":
+                return self._json(ui_config())
             if path == "/api/rates":
                 # 서버 전체 부하 지표(모델별). 누가 무엇을 물었는지는 담기지 않는다.
                 return self._json(rates.snapshot())
@@ -1051,8 +1174,10 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._json({"service": "down", "error": "%s: %s" % (type(e).__name__, e)})
             if path == "/api/chats":
-                chats = list_chats()
-                pend = dict(_CHAT_PENDING)
+                owner, admin = chat_scope(self)
+                chats = list_chats(owner, admin)
+                pend = {k: v for k, v in _CHAT_PENDING.items()
+                        if admin or (v.get("owner") or "") == owner}
                 known = set()
                 for c in chats:
                     known.add(c["id"])
@@ -1065,14 +1190,19 @@ class Handler(BaseHTTPRequestHandler):
                                          "title": p.get("title") or " ".join(str(p.get("message", "")).split())[:40],
                                          "updated_at": p.get("ts"), "count": 0, "cum_tokens": 0,
                                          "ctx_tokens": 0, "model": p.get("model"), "pending": True})
-                return self._json({"chats": chats, "projects": load_projects()})
+                # me/admin은 화면이 "남의 대화"를 구분해 표시하는 데 쓴다
+                return self._json({"chats": chats, "projects": load_projects(),
+                                   "me": owner, "admin": admin})
             if path == "/api/chat":
                 q = parse_qs(u.query)
                 cid = (q.get("id") or [""])[0]
                 if not CHAT_ID_RE.fullmatch(cid):
                     return self._error(400, "bad id", "E-1001")
-                c = load_chat(cid)
+                owner, admin = chat_scope(self)
+                c = load_chat_for(cid, owner, admin)
                 p = _CHAT_PENDING.get(cid)
+                if p is not None and not admin and (p.get("owner") or "") != owner:
+                    p = None            # 남이 보내는 중인 전송은 보이지 않는다
                 if c is None:
                     if p:
                         # 첫 전송이 진행 중인 새 대화 — 아직 저장 전이므로 합성 문서로 응답
@@ -1500,16 +1630,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(400, "bad id", "E-1001")
                 # chat 단위 락: LLM 응답을 기다리는 동안 같은 chat의 분기 전환·수정이 끼어들어
                 # 이 핸들러의 마지막 저장에 통째로 덮어써지는(lost update) 것을 막는다.
+                owner, admin = chat_scope(self)
                 with chat_lock(str(cid) if cid else "-new-"):
                     if cid:
-                        chat = load_chat(cid)
+                        chat = load_chat_for(cid, owner, admin)
                         if chat is None:
                             return self._error(404, "chat not found", "E-1002")
                     else:
                         chat = {"id": "CHAT-%s-%s" % (datetime.now().strftime("%Y%m%d-%H%M%S"),
                                                       secrets.token_hex(4).upper()),
                                 "title": " ".join(msg.strip().split())[:40],
-                                "created_at": now_iso(), "messages": []}
+                                "created_at": now_iso(), "owner": owner, "messages": []}
                     system = body.get("system")
                     if isinstance(system, str):
                         chat["system"] = system.strip()
@@ -1525,6 +1656,7 @@ class Handler(BaseHTTPRequestHandler):
                     _CHAT_PENDING[chat["id"]] = {"message": msg, "ts": now_iso(),
                                                  "model": llm.current_model(cfg),
                                                  "title": chat.get("title") or "",
+                                                 "owner": owner,
                                                  "token": str(body.get("client_token") or "")}
                     def stop_and_save():
                         """정지: 질문은 남기고 답변 자리는 비운다."""
@@ -1596,8 +1728,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(400, "message가 비어 있음", "E-1003")
                 if not CHAT_ID_RE.fullmatch(cid):
                     return self._error(400, "bad id", "E-1001")
+                owner, admin = chat_scope(self)
                 with chat_lock(cid):
-                    chat = load_chat(cid)
+                    chat = load_chat_for(cid, owner, admin)
                     if chat is None:
                         return self._error(404, "chat not found", "E-1002")
                     msgs = chat.get("messages") or []
@@ -1617,6 +1750,7 @@ class Handler(BaseHTTPRequestHandler):
                     _CHAT_PENDING[cid] = {"message": msg, "ts": now_iso(),
                                           "model": llm.current_model(cfg),
                                           "title": chat.get("title") or "", "edit_index": idx,
+                                          "owner": owner,
                                           "token": str(body.get("client_token") or "")}
                     try:
                         try:
@@ -1680,7 +1814,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not switches:
                     return self._error(400, "분기 정보가 없음", "E-1020")
                 with chat_lock(cid):
-                    chat = load_chat(cid)
+                    chat = load_chat_for(cid, *chat_scope(self))
                     if chat is None:
                         return self._error(404, "chat not found", "E-1002")
                     for s in switches:
@@ -1697,10 +1831,15 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._body() or {}
                 cid = str(body.get("id") or "")
                 token = str(body.get("token") or "")
+                owner, admin = chat_scope(self)
                 p = _CHAT_PENDING.get(cid) if cid else None
+                if p is not None and not admin and (p.get("owner") or "") != owner:
+                    p = None            # 남의 전송은 정지시킬 수 없다 (관리자는 예외)
                 if p is None and token:
                     # 새 대화 첫 전송은 클라이언트가 chat id를 모른다 — 전송 토큰으로 찾는다
-                    p = next((v for v in list(_CHAT_PENDING.values()) if v.get("token") == token), None)
+                    p = next((v for v in list(_CHAT_PENDING.values())
+                              if v.get("token") == token
+                              and (admin or (v.get("owner") or "") == owner)), None)
                 if not p:
                     return self._json({"cancelled": False, "reason": "진행 중인 전송이 없음"})
                 p["cancelled"] = True
@@ -1717,7 +1856,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not CHAT_ID_RE.fullmatch(cid):
                     return self._error(400, "bad id", "E-1001")
                 with chat_lock(cid):
-                    chat = load_chat(cid)
+                    chat = load_chat_for(cid, *chat_scope(self))
                     if chat is None:
                         return self._error(404, "chat not found", "E-1002")
                     if "title" in body:
@@ -1762,11 +1901,12 @@ class Handler(BaseHTTPRequestHandler):
                     del projects[pid]
                     save_projects(projects)
                 moved = 0
-                for meta in list_chats():
+                owner, admin = chat_scope(self)
+                for meta in list_chats(owner, admin):
                     if meta.get("project") != pid:
                         continue
                     with chat_lock(meta["id"]):
-                        chat = load_chat(meta["id"])
+                        chat = load_chat_for(meta["id"], owner, admin)
                         if chat and chat.get("project") == pid:
                             chat.pop("project", None)
                             save_chat(chat)
@@ -1799,7 +1939,7 @@ class Handler(BaseHTTPRequestHandler):
                 if len(content) > MAX_INPUT_CHARS:
                     return self._error(413, "내용이 %d자 초과" % MAX_INPUT_CHARS, "E-1004")
                 with chat_lock(cid):
-                    chat = load_chat(cid)
+                    chat = load_chat_for(cid, *chat_scope(self))
                     if chat is None:
                         return self._error(404, "chat not found", "E-1002")
                     msgs = chat.get("messages") or []

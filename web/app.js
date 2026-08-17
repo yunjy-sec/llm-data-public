@@ -176,6 +176,7 @@
         $("#schema").value = JSON.stringify(schema, null, 2);
       }
       loadSettings();
+      await loadUiOptions();  // 렌더 옵션 — 첫 대화를 그리기 전에 body 클래스를 맞춘다
       refreshRates();   // 주기·창 길이·색 범위는 이 응답에 담겨 온다
       // SSO: 1단계(로컬 에이전트 웹소켓)를 먼저 시도하고, 없거나 실패하면 쿠키만으로 확인한다.
       // 어느 쪽이 실패하든 id는 guest로 남고 나머지 기능은 그대로 동작한다.
@@ -2143,6 +2144,16 @@
       const el = document.getElementById(id);
       if (el) el.remove();
     });
+    syncBottomSpacer();
+  }
+
+  // 대기 표시는 목록 끝 여백(.msgspacer) **앞**에 넣는다. 뒤에 넣으면 그 여백이
+  // 이전 대화와 새 질문 사이에 통째로 끼어, 질문이 화면 한참 아래로 밀린다.
+  function insertPendingTurn(box, html) {
+    const sp = box.querySelector(".msgspacer");
+    if (sp) sp.insertAdjacentHTML("beforebegin", html);
+    else box.insertAdjacentHTML("beforeend", html);
+    syncBottomSpacer();   // 새 질문을 맨 위에 놓을 만큼만 여백을 다시 잡는다
   }
 
   function restorePending(doc) {
@@ -2167,11 +2178,11 @@
         const target = box.children[p.edit_index];
         const doomed = [];
         for (let i = p.edit_index; i < box.children.length; i++) doomed.push(box.children[i]);
-        if (target) target.insertAdjacentHTML("beforebegin", row());
-        else box.insertAdjacentHTML("beforeend", row());
+        if (target) { target.insertAdjacentHTML("beforebegin", row()); syncBottomSpacer(); }
+        else insertPendingTurn(box, row());
         doomed.forEach((el) => el.classList.add("superseded"));
       } else {
-        box.insertAdjacentHTML("beforeend", row());
+        insertPendingTurn(box, row());
       }
       scrollMsgIntoTop(document.getElementById("chat-just-sent"));
     }
@@ -2776,6 +2787,23 @@
     return rampAt(logPos(n, c.lo, c.hi));
   }
 
+  // ---- 화면 렌더 옵션 (server.json의 ui) ----
+  // 긴 대화의 스크롤을 빠르게 하는 두 가지를 각각 끄고 켠다. 응답이 오기 전에는 켜진 것으로
+  // 본다 — 기본값이 켬이고, 껐다 켜지며 화면이 한 번 튀는 것보다 낫다.
+  function uiOn(key) {
+    const ui = state.ui;
+    return !ui || ui[key] !== false;
+  }
+
+  async function loadUiOptions() {
+    try {
+      state.ui = await api("api/ui");
+    } catch (e) {
+      state.ui = null;   // 못 읽으면 기본값(둘 다 켬)으로 둔다
+    }
+    document.body.classList.toggle("cvskip", uiOn("skip_offscreen_render"));
+  }
+
   // ---- 서버 전체 요청 지표 (모델별) ----
   // 내 사용량이 아니라 이 서버가 지금 얼마나 붐비는지를 본다. 창 길이·주기·색 범위는
   // 모두 서버(config/server.json의 rate)에서 내려온다 — 여기에 적힌 값은 없다.
@@ -2800,16 +2828,19 @@
     if (!bar) return;
     const rows = (doc && doc.rates) || [];
     if (!rows.length) { bar.hidden = true; bar.innerHTML = ""; return; }
-    const sc = doc.scale || {};
-    const win = doc.window || {};
     const mins = (s) => Math.round((Number(s) || 0) / 60);
-    bar.title = "server-wide, sliding window — requests " + mins(win.request_s) +
-      "m / tokens " + mins(win.token_s) + "m";
-    // rate, token/s, model 순서로 한 행 — 값이 앞이라 눈이 숫자부터 읽는다
-    bar.innerHTML = rows.map((r) =>
-      '<span class="rateitem">' + rateNum(r.rpm, sc.request, "/m") +
-      rateNum(r.tpm, sc.token, "t/m") +
-      '<span class="ratem">' + esc(r.model) + "</span></span>").join("");
+    bar.title = "server-wide request / token rate per model (sliding window)";
+    // rate, token rate, model 순서로 한 행 — 값이 앞이라 눈이 숫자부터 읽는다.
+    // 창과 색 범위는 모델마다 다르므로 각 행이 자기 것을 들고 온다.
+    bar.innerHTML = rows.map((r) => {
+      const sc = r.scale || {};
+      const win = r.window || {};
+      const tip = r.model + " — " + r.requests + " req / " + mins(win.request_s) + "m, " +
+        fmtNum(r.tokens) + " tok / " + mins(win.token_s) + "m";
+      return '<span class="rateitem" title="' + esc(tip) + '">' +
+        rateNum(r.rpm, sc.request, "/m") + rateNum(r.tpm, sc.token, "t/m") +
+        '<span class="ratem">' + esc(r.model) + "</span></span>";
+    }).join("");
     bar.hidden = false;
   }
 
@@ -2908,38 +2939,70 @@
     const body = (role === "assistant" && !m.failed) ? renderMarkdown(m.content) : esc(m.content);
     const who = senderLabel(m);
     const failCls = m.failed ? " failed" : "";
+    // 실측 전 어림 접기 — 짧은 글은 처음부터 접지 않으므로 그라데이션이 깜빡이지 않는다
+    const guessClamp = !((state.expandedMsgs || {})[String(i)]) &&
+      String(m.content || "").length > MSG_CLAMP_GUESS_CHARS ? " clamped" : "";
     return '<div class="msgwrap ' + role + '" data-mi="' + i + '">' +
       (who ? '<div class="sender">' + esc(who) + "</div>" : "") +
-      '<div class="msg ' + role + failCls + '">' + body + "</div>" +
+      '<div class="msg ' + role + failCls + guessClamp + '">' + body + "</div>" +
       (cap ? '<div class="mcap">' + cap + "</div>" : "") + "</div>";
   }
 
   // 긴 질문·답변은 기본 150px로 접어 두고 버튼으로 펼친다 (펼침 상태는 대화별로 기억)
   const MSG_COLLAPSE_PX = 150;
 
-  function applyMsgCollapse() {
-    const box = $("#chat-messages");
+  // 접을지는 실제 높이를 재야 알 수 있는데, 화면 밖 메시지의 높이를 읽으면 브라우저가
+  // 그 메시지를 강제로 그려 버려 content-visibility로 아낀 것이 그대로 사라진다.
+  // 그래서 화면에 가까워진 것만 재고, 그 전에는 글자 수로 어림잡아 접어 둔다.
+  // 어림값이라 틀릴 수 있지만, 눈에 들어오기 한참 전에 실측으로 교정된다.
+  const MSG_CLAMP_GUESS_CHARS = 400;
+
+  function measureCollapse(wrap) {
+    const msg = wrap.querySelector(".msg");
+    if (!msg) return false;
+    const key = wrap.getAttribute("data-mi");
     const expanded = state.expandedMsgs || (state.expandedMsgs = {});
-    box.querySelectorAll(".msgwrap[data-mi]").forEach((wrap) => {
-      const msg = wrap.querySelector(".msg");
-      if (!msg) return;
-      const key = wrap.getAttribute("data-mi");
-      const slot = wrap.querySelector(".mtoggleslot");
-      if (slot) slot.innerHTML = "";
-      const put = (label) => {
-        const html = '<button class="msgtoggle" type="button" data-toggle="' + key + '">' + label + "</button>";
-        if (slot) slot.innerHTML = html;
-        else wrap.insertAdjacentHTML("beforeend", html);
-      };
-      msg.classList.remove("clamped");
-      // 펼친 글은 길다 — 접기 버튼이 든 캡션 줄을 화면에 붙여 두어야 어디서든 접을 수 있다
-      wrap.classList.toggle("expanded", !!expanded[key]);
-      if (expanded[key]) { put("collapse ▴"); return; }
-      if (msg.scrollHeight > MSG_COLLAPSE_PX + 8) {
-        msg.classList.add("clamped");
-        put("expand ▾");
-      }
-    });
+    const slot = wrap.querySelector(".mtoggleslot");
+    if (slot) slot.innerHTML = "";
+    const put = (label) => {
+      const html = '<button class="msgtoggle" type="button" data-toggle="' + key + '">' + label + "</button>";
+      if (slot) slot.innerHTML = html;
+      else wrap.insertAdjacentHTML("beforeend", html);
+    };
+    const wasClamped = msg.classList.contains("clamped");
+    msg.classList.remove("clamped");
+    // 펼친 글은 길다 — 접기 버튼이 든 캡션 줄을 화면에 붙여 두어야 어디서든 접을 수 있다
+    wrap.classList.toggle("expanded", !!expanded[key]);
+    wrap.dataset.measured = "1";
+    if (expanded[key]) { put("collapse ▴"); return wasClamped; }
+    if (msg.scrollHeight > MSG_COLLAPSE_PX + 8) {
+      msg.classList.add("clamped");
+      put("expand ▾");
+    }
+    return wasClamped !== msg.classList.contains("clamped");
+  }
+
+  let _msgObserver = null;
+  function msgObserver() {
+    if (_msgObserver) return _msgObserver;
+    _msgObserver = new IntersectionObserver((entries) => {
+      let changed = false;
+      entries.forEach((en) => {
+        if (!en.isIntersecting) return;
+        if (measureCollapse(en.target)) changed = true;
+        _msgObserver.unobserve(en.target);   // 한 번 재면 충분하다
+      });
+      if (changed) { syncBottomSpacer(); updateJumpButtons(); }
+    }, { root: $("#chat-messages"), rootMargin: "800px 0px" });
+    return _msgObserver;
+  }
+
+  function applyMsgCollapse(only) {
+    const box = $("#chat-messages");
+    const io = msgObserver();
+    const wraps = only || box.querySelectorAll(".msgwrap[data-mi]");
+    if (!only) io.disconnect();
+    wraps.forEach((w) => { if (!w.dataset.measured) io.observe(w); });
     syncBottomSpacer();  // 마지막 질문도 맨 위까지 올릴 수 있도록 아래 여백 확보
     updateJumpButtons(); // 높이가 바뀌었으므로 스크롤 점프 버튼 표시도 갱신
   }
@@ -2949,7 +3012,9 @@
   function syncBottomSpacer() {
     const box = $("#chat-messages");
     let sp = box.querySelector(".msgspacer");
-    const wraps = [...box.querySelectorAll(".msgwrap[data-mi]")];
+    // 전송 중인 질문(.msgwrap이지만 아직 data-mi가 없다)도 기준에 넣는다. 빼면 여백이
+    // 직전 턴 기준으로 잡혀 새 질문이 화면 아래로 밀리고, 답변이 오면 그만큼 튄다.
+    const wraps = [...box.querySelectorAll(".msgwrap")];
     if (!wraps.length) { if (sp) sp.remove(); return; }
     let lastQ = null;
     for (let i = wraps.length - 1; i >= 0; i--) {
@@ -2968,23 +3033,17 @@
     sp.style.height = Math.max(0, Math.round(box.clientHeight - tail - 8)) + "px";
   }
 
-  function renderChatMessages() {
-    const box = $("#chat-messages");
-    const prevTop = box.scrollTop; // 사용자가 보던 위치 보존용
-    const msgs = (state.chatDoc && state.chatDoc.messages) || [];
-    box.innerHTML = msgs.length
-      ? msgs.map((m, i) => msgHtml(m, i)).join("")
-      : '<div class="empty">Send a message to ' + (state.chatId ? "continue this chat." : "start a new chat.") + "</div>";
-    // syntax highlight (highlight.js — language-* class 사용, 없으면 자동 인식)
+  // 하이라이트·수식 렌더는 넣은 곳에만 돌린다. 대화 전체에 다시 돌리면 턴이 쌓일수록
+  // 새 답변 하나 받는 데 드는 비용이 계속 커진다.
+  function decorateMessages(root) {
     if (window.hljs) {
-      box.querySelectorAll(".codewrap pre code").forEach((el) => {
+      root.querySelectorAll(".codewrap pre code").forEach((el) => {
         try { window.hljs.highlightElement(el); } catch (e) { /* 하이라이트 실패는 무시 */ }
       });
     }
-    // 수식 렌더링 (KaTeX auto-render — 코드 영역은 제외)
     if (window.renderMathInElement) {
       try {
-        window.renderMathInElement(box, {
+        window.renderMathInElement(root, {
           delimiters: [
             { left: "$$", right: "$$", display: true },
             { left: "\\[", right: "\\]", display: true },
@@ -2997,7 +3056,48 @@
         });
       } catch (e) { /* 수식 렌더 실패는 무시 */ }
     }
-    applyMsgCollapse(); // 접기 상태 적용 — 스크롤 앵커 계산 전에 높이를 확정한다
+  }
+
+  // 이미 그려 둔 것과 무엇이 달라졌는지 알아보는 열쇠. 내용이 바뀌면 길이나 edited_at이 달라진다.
+  function msgKey(m, i) {
+    return i + "|" + (m.role || "") + "|" + (m.ts || "") + "|" + (m.edited_at || "") +
+      "|" + String(m.content || "").length + "|" + (m.failed ? "F" : "");
+  }
+
+  function renderChatMessages() {
+    const box = $("#chat-messages");
+    const prevTop = box.scrollTop; // 사용자가 보던 위치 보존용
+    const msgs = (state.chatDoc && state.chatDoc.messages) || [];
+    const keys = msgs.map(msgKey);
+    const prev = state.renderedKeys;
+    // 뒤에 붙기만 했으면 새 메시지만 만들어 넣는다 (분기 전환·수정은 앞이 바뀌므로 전체 재생성).
+    // server.json의 ui.incremental_render로 끌 수 있다.
+    const appendOnly = uiOn("incremental_render") &&
+      state.renderedChatId === state.chatId && prev && keys.length > prev.length &&
+      prev.length > 0 && prev.every((k, i) => k === keys[i]);
+    let fresh = [];
+    if (appendOnly) {
+      ["chat-just-sent", "chat-pending-wrap"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.remove();          // 대기 표시 자리에 진짜 메시지가 들어온다
+      });
+      const html = msgs.slice(prev.length).map((m, k) => msgHtml(m, prev.length + k)).join("");
+      const sp = box.querySelector(".msgspacer");
+      if (sp) sp.insertAdjacentHTML("beforebegin", html);
+      else box.insertAdjacentHTML("beforeend", html);
+      for (let i = prev.length; i < msgs.length; i++) {
+        const el = box.querySelector('.msgwrap[data-mi="' + i + '"]');
+        if (el) { decorateMessages(el); fresh.push(el); }
+      }
+    } else {
+      box.innerHTML = msgs.length
+        ? msgs.map((m, i) => msgHtml(m, i)).join("")
+        : '<div class="empty">Send a message to ' + (state.chatId ? "continue this chat." : "start a new chat.") + "</div>";
+      decorateMessages(box);
+    }
+    state.renderedKeys = keys;
+    state.renderedChatId = state.chatId;
+    applyMsgCollapse(appendOnly ? fresh : null); // 접기 상태 적용 — 스크롤 앵커 계산 전에 높이를 확정한다
     renderTxState();    // 새로 그려진 수정 상자 버튼에도 현재 전송 상태를 반영
     // 스크롤: 방금 보낸 질문이 있으면 그 질문을 상단에 앵커 (답변을 처음부터 읽도록),
     // 아니면 맨 아래로
@@ -3219,13 +3319,9 @@
     const flat = (s, n) => String(s || "").replace(/\s+/g, " ").trim().slice(0, n);
     const rowsHtml = rows.map((r, ri) => {
       const m = r.msg;
-      // 요약: 답변 행은 [질문 앞부분 → 답변 앞부분]으로 한 턴을 함께 보여준다
-      let preview = flat(m.content, 64);
-      if (m.role === "assistant") {
-        const prevRow = rows[ri - 1];
-        const q = prevRow && prevRow.msg.role === "user" ? flat(prevRow.msg.content, 30) : "";
-        preview = (q ? q + " → " : "") + flat(m.content, q ? 40 : 64);
-      }
+      // 요약은 그 행의 내용만. 질문과 답변은 이미 행으로 나뉘어 있어서, 답변 행에 질문을
+      // 다시 붙이면 같은 질문이 두 줄에 걸쳐 두 번 보인다.
+      const preview = flat(m.content, 64);
       let meta = "";
       if (m.role === "assistant") {
         const u = m.usage || {};
@@ -3410,8 +3506,8 @@
     resetInputHeight();
     const box = $("#chat-messages");
     if (!((state.chatDoc && state.chatDoc.messages) || []).length) box.innerHTML = "";
-    // 완료 상태와 같은 구조로 그린다 — 답변이 와도 자리가 움직이지 않는다
-    box.insertAdjacentHTML("beforeend", pendingTurnHtml(msg, Date.now(), null));
+    // 완료 상태와 같은 구조·같은 자리에 그린다 — 답변이 와도 화면이 움직이지 않는다
+    insertPendingTurn(box, pendingTurnHtml(msg, Date.now(), null));
     // 방금 보낸 질문을 채팅창 상단에 앵커 — 질문과 그 아래 대기 타이머가 항상 보이게
     scrollMsgIntoTop(document.getElementById("chat-just-sent"));
     renderChatRequest(buildRequestPreview(msg, opts)); // 요청 전문은 전송 직후 즉시 표시
@@ -3680,7 +3776,10 @@
       const key = tg.getAttribute("data-toggle");
       const expanded = state.expandedMsgs || (state.expandedMsgs = {});
       if (expanded[key]) delete expanded[key]; else expanded[key] = true;
-      applyMsgCollapse();
+      const wrap = tg.closest(".msgwrap");
+      if (wrap) measureCollapse(wrap);   // 누른 그 글만 다시 잰다
+      syncBottomSpacer();
+      updateJumpButtons();
       return;
     }
     const cc = e.target.closest(".copycode");

@@ -51,6 +51,27 @@
       "timeout": 3
     }
   },
+  "host": {
+    "enabled": true,
+    "hostname_match": "vwp",
+    "userinfo_path": "/appl/CAEutil/LINUX/local/bin/userinfo/VUI_utf.txt",
+    "separator": "|",
+    "fields": {
+      "name": 2,
+      "dept": 5,
+      "email": 9,
+      "account": 10
+    },
+    "etc": {
+      "설명": "폐쇄망 리눅스에서 쓰는 창구. Windows에서는 위의 local/verify(KnoxTray)를 쓰고, 여기 규칙에 걸리면 밖으로 나가지 않고 서버 안에서 신원을 정한다.",
+      "hostname_match": "uname -n 에 이 문자열이 있으면 폐쇄망으로 본다. Windows에서는 이 항목과 무관하게 KnoxTray를 쓴다.",
+      "판단 순서": "1) whoami 로 셸 계정을 얻는다 2) userinfo_path 파일에서 그 계정 줄을 찾아 이름·소속·EP_LOGINID를 채운다 3) 줄을 못 찾으면 셸 계정을 그대로 id로 쓴다 4) 계정조차 못 읽으면 guest로 남고 화면은 임시 로그인을 보여준다.",
+      "userinfo_path": "cshell에서 grep \"|`whoami`|\" 로 찾던 그 파일. 한 줄이 123456|홍길동|... 처럼 구분자로 이어져 있다.",
+      "fields": "칸 번호는 1부터 센다. email 칸의 @ 앞부분이 EP_LOGINID에 대응하는 id가 된다.",
+      "account": "셸 계정은 id와 다를 수 있어 따로 보관하고, 관리자 판단(access.json의 admin.id)에서는 id와 셸 계정을 모두 맞춰 본다.",
+      "enabled": "false로 두면 이 창구를 아예 쓰지 않는다."
+    }
+  },
   "etc": {
     "흐름 1": "브라우저가 ws://localhost:29282에 붙어 local.request를 보낸다.",
     "흐름 2": "KnoxTray 응답에서 local.response 경로로 userInfo와 key를 꺼낸다 (data가 JSON 문자열이라 자동 파싱된다).",
@@ -61,6 +82,7 @@
     "로그": "각 단계가 서버 터미널에 [SSO] 접두어로, 같은 내용이 브라우저 console에 [sso]로 남는다. 자격 정보는 값 대신 길이만 표시된다.",
     "실패 시": "어떤 단계가 실패하든 id는 guest로 유지되고 다른 기능은 그대로 동작한다.",
     "설정 없을 때": "이 파일이 없거나 verify.url이 비어 있으면 SSO를 아예 시도하지 않고 LED도 켜지 않는다.",
+    "환경 갈림": "Windows면 KnoxTray(local+verify), uname -n에 host.hostname_match가 있으면 서버 안에서 셸 계정으로, 둘 다 아니면 설정된 대로 verify만 시도한다. 어느 쪽도 신원을 못 얻으면 임시 로그인으로 넘어간다.",
     "poll_seconds": 30,
     "poll_seconds 설명": "화면이 SSO 상태를 다시 확인하는 주기(초). 기본 30, 최소 5.",
     "cache_seconds": 60,

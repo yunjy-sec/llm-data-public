@@ -47,12 +47,16 @@ id를 실제로 가져오면 초록 LED와 함께 id 이름 부서가 표시된�
 
 import log as _log_mod
 import base64
+import getpass
 import hashlib
 import hmac
 import http.client
+import io
 import json
 import os
+import platform
 import socket
+import subprocess
 import threading
 import time
 from urllib.parse import urlsplit
@@ -151,16 +155,145 @@ def poll_seconds(cfg=None):
         return 30
 
 
+# ---- 실행 환경에 따라 창구가 갈린다 ---------------------------------------------
+# Windows       -> 브라우저가 KnoxTray 웹소켓으로 티켓을 받아 verify_sso로 확인한다 (아래 2단계)
+# 폐쇄망 리눅스  -> 밖으로 나갈 수 없다. 서버를 돌리는 셸 계정(whoami)이 곧 로그인 계정이고,
+#                 사용자 정보 파일에서 이름·소속·EP_LOGINID를 찾는다.
+# 둘 다 안 되면 신원 없이 guest로 떨어지고, 화면은 임시 로그인을 보여준다.
+DEFAULT_HOST = {
+    "hostname_match": "vwp",     # uname -n 에 이 문자열이 있으면 폐쇄망으로 본다
+    "userinfo_path": "/appl/CAEutil/LINUX/local/bin/userinfo/VUI_utf.txt",
+    "separator": "|",
+    # 파일 한 줄은 123456|홍길동|...  형태다. 번호는 1부터 센다.
+    "fields": {"name": 2, "dept": 5, "email": 9, "account": 10},
+}
+
+
+def _host_cfg(cfg):
+    sec = _sec(cfg, "host")
+    out = {k: v for k, v in DEFAULT_HOST.items() if k != "fields"}
+    for k in ("hostname_match", "userinfo_path", "separator"):
+        v = str(sec.get(k) or "").strip()
+        if v:
+            out[k] = v
+    fields = dict(DEFAULT_HOST["fields"])
+    got = sec.get("fields")
+    if isinstance(got, dict):
+        for k, v in got.items():
+            try:
+                fields[str(k)] = int(v)
+            except (TypeError, ValueError):
+                continue
+    out["fields"] = fields
+    out["enabled"] = sec.get("enabled", True) is not False
+    return out
+
+
+def host_mode(cfg=None):
+    """이 서버가 어느 환경에서 도는가. "windows" | "host" | "none"."""
+    cfg = load_config() if cfg is None else cfg
+    if os.name == "nt":
+        return "windows"
+    h = _host_cfg(cfg)
+    if not h["enabled"] or not h["hostname_match"]:
+        return "none"
+    node = ""
+    try:
+        node = platform.node() or ""      # uname -n 과 같다
+    except Exception:
+        node = ""
+    return "host" if h["hostname_match"].lower() in node.lower() else "none"
+
+
+def _shell_account():
+    """서버를 돌리는 셸 계정. whoami와 같은 값이다."""
+    try:
+        got = (getpass.getuser() or "").strip()
+        if got:
+            return got
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(["whoami"], stderr=subprocess.DEVNULL, timeout=3)
+        return out.decode("utf-8", "replace").strip()
+    except Exception as e:
+        _log("셸 계정을 확인하지 못했습니다: %s" % e)
+        return ""
+
+
+def _userinfo_row(h, account):
+    """사용자 정보 파일에서 그 계정의 줄을 찾아 구분자로 나눈다.
+    cshell에서 grep "|`whoami`|" 로 찾던 것과 같은 일이다. 계정 칸이 실제로 맞는지까지
+    확인한다 — 다른 칸에 같은 문자열이 있어도 엉뚱한 줄을 잡지 않도록."""
+    path = h["userinfo_path"]
+    sep = h["separator"] or "|"
+    needle = sep + account + sep
+    col = int(h["fields"].get("account", 10))
+    try:
+        with io.open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if needle not in line:
+                    continue
+                cells = line.rstrip("\r\n").split(sep)
+                if 0 < col <= len(cells) and cells[col - 1].strip() == account:
+                    return cells
+    except OSError as e:
+        _log("사용자 정보 파일을 읽지 못했습니다: %s (%s)" % (path, e))
+    return None
+
+
+def host_identity(cfg=None):
+    """폐쇄망 리눅스에서의 신원. 계정조차 못 읽으면 None (임시 로그인으로 넘어간다).
+
+    파일에서 찾으면 id는 email의 @ 앞부분(EP_LOGINID에 대응)이고, 못 찾으면 셸 계정을
+    그대로 id로 쓴다. 관리자 판단에 쓰라고 account(셸 계정)도 함께 담는다.
+    """
+    cfg = load_config() if cfg is None else cfg
+    h = _host_cfg(cfg)
+    account = _shell_account()
+    if not account:
+        return None
+    out = {"id": account, "account": account, "source": "host",
+           "service": "up", "via": "whoami"}
+    row = _userinfo_row(h, account)
+    if row:
+        f = h["fields"]
+
+        def at(num):
+            try:
+                i = int(num)
+            except (TypeError, ValueError):
+                return ""
+            return row[i - 1].strip() if 0 < i <= len(row) else ""   # 번호는 1부터 센다
+
+        email = at(f.get("email", 9))
+        if email:
+            out["id"] = email.split("@")[0].strip() or account
+        name, dept = at(f.get("name", 2)), at(f.get("dept", 5))
+        if name:
+            out["name"] = name
+        if dept:
+            out["dept"] = dept
+        out["via"] = "userinfo"
+    else:
+        _log("사용자 정보 파일에서 %s 줄을 찾지 못해 셸 계정을 그대로 씁니다" % account)
+    return out
+
+
 def public_config(cfg=None):
     """브라우저가 1단계를 수행하는 데 필요한 정보만. 자격 정보는 담지 않는다."""
     cfg = load_config() if cfg is None else cfg
     local = _sec(cfg, "local")
+    mode = host_mode(cfg)
     return {
-        "configured": configured(cfg),
+        # mode가 windows일 때만 브라우저가 웹소켓 1단계를 시도한다.
+        # 폐쇄망(host)에서는 서버가 셸 계정으로 신원을 정하므로 브라우저는 물어보기만 한다.
+        "mode": mode,
+        "configured": configured(cfg) if mode != "host" else True,
         "verify_url": endpoint(cfg),
         "poll_seconds": poll_seconds(cfg),
         "local": {
-            "url": str(local.get("url") or "").strip(),
+            "url": (str(local.get("url") or "").strip() if mode == "windows" else ""),
             "request": local.get("request"),
             "response": local.get("response") or {},
             "timeout": _num(_etc(local, "timeout", 3), 3),
@@ -203,17 +336,23 @@ def _sign(secret, payload):
         hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).digest()).decode().rstrip("=")
 
 
+# 신원으로 인정하는 출처. sso는 티켓 확인, host는 폐쇄망의 셸 계정이다.
+IDENTITY_SOURCES = ("sso", "host")
+
+
 def identity_cookie(result, cfg=None):
     """확인된 신원을 담는 Set-Cookie 값. 신원이 없으면 즉시 만료시킨다."""
     cfg = load_config() if cfg is None else cfg
-    if not result or result.get("source") != "sso" or not result.get("id"):
+    if not result or result.get("source") not in IDENTITY_SOURCES or not result.get("id"):
         return "%s=; Path=/; Max-Age=0; SameSite=Lax" % IDENTITY_COOKIE
     try:
         hours = float(_etc(cfg, "identity_hours", DEFAULT_IDENTITY_HOURS) or DEFAULT_IDENTITY_HOURS)
     except (TypeError, ValueError):
         hours = DEFAULT_IDENTITY_HOURS
     body = json.dumps({"id": result.get("id"), "name": result.get("name"),
-                       "dept": result.get("dept"), "exp": int(time.time() + hours * 3600)},
+                       "dept": result.get("dept"), "account": result.get("account"),
+                       "src": result.get("source"),
+                       "exp": int(time.time() + hours * 3600)},
                       ensure_ascii=False, sort_keys=True)
     raw = base64.urlsafe_b64encode(body.encode("utf-8")).decode().rstrip("=")
     return "%s=%s.%s; Path=/; Max-Age=%d; SameSite=Lax" % (
@@ -245,8 +384,9 @@ def identity_from(headers, cfg=None):
         return None
     if not isinstance(doc, dict) or int(doc.get("exp") or 0) < time.time():
         return None
-    out = {"id": doc.get("id"), "source": "sso", "service": "up", "via": "cookie"}
-    for k in ("name", "dept"):
+    src = doc.get("src") if doc.get("src") in IDENTITY_SOURCES else "sso"
+    out = {"id": doc.get("id"), "source": src, "service": "up", "via": "cookie"}
+    for k in ("name", "dept", "account"):
         if doc.get(k):
             out[k] = doc[k]
     return out if out["id"] else None
@@ -416,6 +556,12 @@ def whoami(incoming_headers=None, values=None):
       service = "up" | "down" | "unconfigured"
     """
     cfg = load_config()
+    if host_mode(cfg) == "host":
+        # 폐쇄망: 밖으로 나가지 않는다. 셸 계정과 사용자 정보 파일이 전부다.
+        got = host_identity(cfg)
+        if got:
+            return got
+        return {"id": GUEST, "source": "none", "service": "unconfigured", "mode": "host"}
     url = endpoint(cfg)
     if not url:
         return {"id": GUEST, "source": "none", "service": "unconfigured"}

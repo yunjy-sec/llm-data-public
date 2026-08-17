@@ -170,6 +170,17 @@ def opt(cfg, key, default=None):
     return default
 
 
+def rate_config(cfg=None, model=None):
+    """모델별 rate 설정 — llm.json 프로필의 rate 블록.
+
+    창 길이는 모델마다 다르다. 빠른 모델과 오래 걸리는 모델을 같은 창으로 재면
+    한쪽은 늘 0에 가깝고 다른 쪽은 계속 붐벼 보인다. 그래서 url·header·body와 나란히
+    모델 프로필 안에 둔다. 없으면 {} — 그 모델은 기본값으로 잰다.
+    """
+    got = opt(resolve(cfg if cfg is not None else load_config(), model), "rate")
+    return got if isinstance(got, dict) else {}
+
+
 def req_timeout(cfg):
     """LLM 호출 타임아웃(초). config의 timeout을 그대로 쓴다(기본 300)."""
     cfg = resolve(cfg)
@@ -223,7 +234,7 @@ def probe_timeout(cfg):
 
 EDITABLE_KEYS = ("base_url", "url", "model", "headers", "api_key_env", "timeout", "response_schema",
                  "extra_payload", "model_options", "models", "header_map", "probe_timeout",
-                 "header", "body", "body_by_model", "etc", "poll_seconds",
+                 "header", "body", "body_by_model", "rate", "etc", "poll_seconds",
                  "latency_scale", "token_scale")
 
 # 모델별 추가 설정(요청 payload에 실리는 옵션). 해당 모델이 지원하지 않으면 목록이 비고,
@@ -481,6 +492,12 @@ def save_config(new_cfg):
                                 if isinstance(o.get(key), list)}
             if opts:
                 out[k] = opts
+        elif k == "rate":
+            # 프로필이 없는 단일 구성에서 쓰는 최상위 rate. 프로필 구성이면 프로필 안의 것이 이긴다.
+            if not isinstance(v, dict):
+                raise LLMError("E-2004", "rate는 객체여야 함", http=400)
+            if v:
+                out[k] = v
         elif k == "etc":
             if not isinstance(v, dict):
                 raise LLMError("E-2004", "etc는 객체여야 함", http=400)
@@ -494,7 +511,8 @@ def save_config(new_cfg):
     for k in PASSTHROUGH_KEYS:
         if k in new_cfg and new_cfg[k] is not None:
             out[k] = str(new_cfg[k])
-    # 모델 프로필(모델마다 온전한 url/header/body/etc)은 통째로 보존한다. 키 이름이 모델 이름이다.
+    # 모델 프로필(모델마다 온전한 url/header/body/rate/etc)은 통째로 보존한다.
+    # 키 이름이 곧 모델 이름이다.
     for name, prof in profiles(new_cfg).items():
         p = {}
         if prof.get("url"):
@@ -503,6 +521,8 @@ def save_config(new_cfg):
             p["header"] = _header_dict(prof["header"])
         if isinstance(prof.get("body"), dict):
             p["body"] = prof["body"]
+        if isinstance(prof.get("rate"), dict):
+            p["rate"] = prof["rate"]
         if isinstance(prof.get("etc"), dict):
             p["etc"] = prof["etc"]
         if not p.get("url"):

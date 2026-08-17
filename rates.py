@@ -1,38 +1,36 @@
 # -*- coding: utf-8 -*-
-"""서버 전체의 모델별 요청 rate와 토큰 처리량 (sliding window).
+"""서버 전체의 모델별 요청 rate와 토큰 rate (sliding window).
 
 누가 보고 있든 이 서버가 받은 모든 요청을 센다 — 개인 사용량이 아니라 서버 부하 지표다.
-둘 다 분당 rate로 보여 준다. 다만 창 길이가 다르다 — 요청은 짧은 창으로 지금 붐비는지를,
-토큰은 긴 창으로 처리량의 추세를 본다. 둘 다 sliding window라 창 밖의 기록은 버려진다.
+둘 다 분당 rate로 보여 주지만 창 길이는 모델마다 다르다. 빠른 모델과 오래 걸리는 모델을
+같은 창으로 재면 한쪽은 늘 0에 가깝고 다른 쪽은 계속 붐벼 보이기 때문이다.
+sliding window라 창 밖으로 나간 기록은 셀 때 버려진다.
 
-설정은 config/server.json의 rate 블록에서 읽는다. 아래 DEFAULTS는 설정 파일이 없을 때만
-쓰는 출발점이고, server.json에 적은 값이 언제나 이긴다.
+설정이 어디 사는지는 이 모듈이 알지 않는다. 호출자가 set_config_source()로
+"모델 이름 -> rate 설정(dict)" 함수를 꽂아 준다. 이 서비스에서는 llm.json의
+모델 프로필 안 rate 블록이고, 다른 서비스에 떼어 갈 때는 다른 것을 꽂으면 된다.
+아래 DEFAULTS는 설정이 없을 때의 출발점이다.
 
-    "rate": {
-      "request_window_s": 300,
-      "token_window_s": 600,
-      "poll_seconds": 5,
-      "keep": 20000,
-      "request_scale": {"min": 0.05, "max": 30},
-      "token_scale": {"min": 50, "max": 20000}
+    "gpt-oss-120b": {
+      "url": ..., "header": {...}, "body": {...},
+      "rate": {
+        "request_window_s": 300,
+        "token_window_s": 600,
+        "poll_seconds": 5,
+        "keep": 20000,
+        "request_scale": {"min": 0.05, "max": 30},
+        "token_scale": {"min": 50, "max": 20000}
+      },
+      "etc": {...}
     }
-
-이 모듈은 다른 모듈을 import하지 않는다. 통째로 떼어 다른 서비스에 붙일 수 있다.
 """
 
-import json
-import os
 import threading
 import time
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.environ.get("LLM_DATA_SERVER_CONFIG") or os.path.join(ROOT, "config", "server.json")
-CONFIG_KEY = "rate"
-
-# 설정 파일이 없을 때의 출발점. 값의 정의는 server.json.example에 적어 둔다.
 DEFAULTS = {
     "request_window_s": 300,      # 요청 rate 창 (초)
-    "token_window_s": 600,        # 토큰 처리량 창 (초)
+    "token_window_s": 600,        # 토큰 rate 창 (초)
     "poll_seconds": 5,            # 화면이 다시 물어보는 주기 (초)
     "keep": 20000,                # 모델당 보관 상한 — 폭주해도 메모리가 늘지 않게
     "request_scale": {"min": 0.05, "max": 30},   # 색 스케일: 분당 요청 수
@@ -50,7 +48,23 @@ _LOCK = threading.Lock()
 _REQ = {}     # model -> [ts, ...]
 _TOK = {}     # model -> [(ts, tokens), ...]
 
-_CFG = {"data": None, "mtime": None}
+_SOURCE = None
+
+
+def set_config_source(fn):
+    """모델 이름을 받아 그 모델의 rate 설정(dict)을 돌려주는 함수를 꽂는다."""
+    global _SOURCE
+    _SOURCE = fn
+
+
+def _raw(model):
+    if _SOURCE is None:
+        return {}
+    try:
+        got = _SOURCE(model)
+    except Exception:
+        return {}      # 설정을 못 읽어도 지표 때문에 서버가 멈추면 안 된다
+    return got if isinstance(got, dict) else {}
 
 
 def _clamp(key, val):
@@ -78,29 +92,12 @@ def _scale(got, default):
     return out
 
 
-def config(force=False):
-    """server.json의 rate 블록. 파일이 바뀌면 다시 읽는다(재기동 없이 반영)."""
-    try:
-        mtime = os.path.getmtime(CONFIG_PATH)
-    except OSError:
-        mtime = None
-    if not force and _CFG["data"] is not None and _CFG["mtime"] == mtime:
-        return _CFG["data"]
-
-    raw = {}
-    if mtime is not None:
-        try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
-                doc = json.load(f)
-            if isinstance(doc, dict) and isinstance(doc.get(CONFIG_KEY), dict):
-                raw = doc[CONFIG_KEY]
-        except (OSError, ValueError):
-            raw = {}   # 설정이 깨져도 지표 때문에 서버가 멈추면 안 된다
-
+def config(model):
+    """그 모델의 rate 설정. 적히지 않은 값은 기본값으로 메운다."""
+    raw = _raw(model)
     out = {k: _clamp(k, raw.get(k, DEFAULTS[k])) for k in _LIMITS}
     out["request_scale"] = _scale(raw.get("request_scale"), DEFAULTS["request_scale"])
     out["token_scale"] = _scale(raw.get("token_scale"), DEFAULTS["token_scale"])
-    _CFG["data"], _CFG["mtime"] = out, mtime
     return out
 
 
@@ -114,22 +111,22 @@ def _push(store, model, item, keep):
 def record_request(model):
     """LLM 요청 1건. 화면 표시용이라 실패해도 조용히 넘어간다."""
     try:
-        cfg = config()
+        keep = config(model)["keep"]
         with _LOCK:
-            _push(_REQ, model, time.time(), cfg["keep"])
+            _push(_REQ, model, time.time(), keep)
     except Exception:
         pass
 
 
 def record_tokens(model, tokens):
-    """응답으로 오간 토큰 수. usage가 없으면 기록하지 않는다."""
+    """응답으로 오간 토큰 수. 0 이하면 기록하지 않는다."""
     try:
         n = int(tokens or 0)
         if n <= 0:
             return
-        cfg = config()
+        keep = config(model)["keep"]
         with _LOCK:
-            _push(_TOK, model, (time.time(), n), cfg["keep"])
+            _push(_TOK, model, (time.time(), n), keep)
     except Exception:
         pass
 
@@ -144,38 +141,38 @@ def record_usage(model, usage):
 
 
 def snapshot():
-    """모델별 최근 rate. 요청이 많은 순으로 돌려준다."""
-    cfg = config()
+    """모델별 최근 rate. 창과 색 범위가 모델마다 다르므로 각 행에 함께 실어 보낸다."""
     now = time.time()
-    rcut = now - cfg["request_window_s"]
-    tcut = now - cfg["token_window_s"]
-    rows = {}
+    models = set()
     with _LOCK:
-        for model, q in list(_REQ.items()):
-            fresh = [t for t in q if t >= rcut]
-            _REQ[model] = fresh                     # 창 밖은 버린다
-            if fresh:
-                rows.setdefault(model, {})["requests"] = len(fresh)
-        for model, q in list(_TOK.items()):
-            fresh = [(t, n) for (t, n) in q if t >= tcut]
-            _TOK[model] = fresh
-            if fresh:
-                rows.setdefault(model, {})["tokens"] = sum(n for (_, n) in fresh)
+        models.update(_REQ.keys())
+        models.update(_TOK.keys())
 
     out = []
-    for model, r in rows.items():
-        req, tok = r.get("requests", 0), r.get("tokens", 0)
+    polls = []
+    for model in sorted(models):
+        c = config(model)
+        polls.append(c["poll_seconds"])
+        rcut, tcut = now - c["request_window_s"], now - c["token_window_s"]
+        with _LOCK:
+            req = [t for t in _REQ.get(model, []) if t >= rcut]
+            tok = [(t, n) for (t, n) in _TOK.get(model, []) if t >= tcut]
+            if model in _REQ:
+                _REQ[model] = req          # 창 밖은 버린다
+            if model in _TOK:
+                _TOK[model] = tok
+        if not req and not tok:
+            continue
+        total = sum(n for (_, n) in tok)
         out.append({
             "model": model,
-            "requests": req,
-            "rpm": round(req * 60.0 / cfg["request_window_s"], 2),
-            "tokens": tok,
-            "tpm": round(tok * 60.0 / cfg["token_window_s"], 2),
+            "requests": len(req),
+            "rpm": round(len(req) * 60.0 / c["request_window_s"], 2),
+            "tokens": total,
+            "tpm": round(total * 60.0 / c["token_window_s"], 2),
+            "window": {"request_s": c["request_window_s"], "token_s": c["token_window_s"]},
+            "scale": {"request": c["request_scale"], "token": c["token_scale"]},
         })
     out.sort(key=lambda r: (-r["rpm"], -r["tpm"], r["model"]))
-    return {
-        "rates": out,
-        "window": {"request_s": cfg["request_window_s"], "token_s": cfg["token_window_s"]},
-        "poll_seconds": cfg["poll_seconds"],
-        "scale": {"request": cfg["request_scale"], "token": cfg["token_scale"]},
-    }
+    # 주기도 모델마다 적을 수 있다 — 화면은 하나뿐이므로 가장 짧은 주기를 따른다
+    return {"rates": out, "poll_seconds": min(polls) if polls else DEFAULTS["poll_seconds"]}

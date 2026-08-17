@@ -26,13 +26,27 @@
         "messages.content": "메시지 본문"
       }
     },
+    "rate": {
+      "request_window_s": 300,
+      "token_window_s": 600,
+      "poll_seconds": 5,
+      "keep": 20000,
+      "request_scale": { "min": 0.05, "max": 30 },
+      "token_scale": { "min": 50, "max": 20000 }
+    },
     "etc": {
-      "설명": "최상위 키 이름이 모델 이름이다. 모델마다 url header body etc 한 벌을 온전히 갖는다.",
+      "설명": "최상위 키 이름이 모델 이름이다. 모델마다 url header body rate etc 한 벌을 온전히 갖는다.",
       "url": "이 모델의 전체 endpoint를 그대로 적는다.",
       "header": "적은 이름과 값 그대로 전송된다(대소문자 보존). 값은 모두 문자열. {uuid} {uuid_hex} {ts}는 요청마다 치환된다.",
       "body 고정값": "스칼라(model, stream)는 매 요청 그대로 실린다.",
       "body 선택값": "{min,max,step}이면 그 범위의 수, [\"a\",\"b\"]면 그 목록 중 하나로 화면에 입력칸이 생긴다. 고르지 않으면 보내지 않는다.",
       "disabled": "header와 body 안의 disabled 블록은 적어만 두고 전송하지 않는다. 켜려면 그 줄을 disabled 밖으로 옮긴다. max_tokens는 여기 있으므로 응답 길이를 제한하지 않는다 — 제한하려면 밖으로 옮긴다.",
+      "rate": "대화 화면 우측 위에 뜨는 요청·토큰 rate. 둘 다 분당으로 보이고, 창은 sliding window다. 창 길이는 모델마다 다르므로 여기 둔다 — 빠른 모델과 오래 걸리는 모델을 같은 창으로 재면 한쪽은 늘 0에 가깝다.",
+      "rate.request_window_s": "요청 rate를 평균낼 창(초). 짧을수록 순간 부하에 민감하다.",
+      "rate.token_window_s": "토큰 rate를 평균낼 창(초). 요청 창보다 길게 두어 추세를 본다.",
+      "rate.poll_seconds": "화면이 지표를 다시 물어보는 주기(초). 모델마다 다르면 가장 짧은 값을 따른다.",
+      "rate.keep": "모델당 기록 보관 상한. 요청이 폭주해도 메모리가 늘지 않게 하는 안전장치다.",
+      "rate.request_scale / token_scale": "숫자에 입히는 색의 범위. min에서 옅고 max에서 짙다(log 매핑이라 min>0).",
       "etc": "여기에 쓴 것은 전송되지 않는다. timeout, probe_timeout, response_schema를 넣으면 이 모델에 그 값으로 동작한다.",
       "timeout": 900,
       "poll_seconds": 30,
